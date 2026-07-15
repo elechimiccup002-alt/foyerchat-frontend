@@ -149,9 +149,34 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  /* se una registrazione è rimasta a metà (email non ancora verificata),
+     riapri direttamente sullo step del codice invece di far ripartire tutto */
   useEffect(() => {
-    if (open) { setMode("register"); setErr(""); setCode(""); setBusy(false); }
+    if (!open) return;
+    setErr(""); setCode(""); setBusy(false);
+    const pending = localStorage.getItem("foyer_pending_email");
+    if (pending) {
+      setForm((f) => ({ ...f, email: pending }));
+      setMode("verify");
+    } else {
+      setMode("register");
+    }
   }, [open]);
+
+  const startOver = () => {
+    localStorage.removeItem("foyer_pending_email");
+    setForm({ name: "", age: "", email: "", password: "", handle: "", city: "" });
+    setMode("register"); setErr(""); setCode("");
+  };
+
+  const resendCode = async () => {
+    setErr(""); setBusy(true);
+    try {
+      await api("/api/auth/resend-code", { method: "POST", body: { email: form.email } });
+      setErr("Nuovo codice inviato.");
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -169,6 +194,7 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
     setBusy(true);
     try {
       await api("/api/auth/register", { method: "POST", body: { ...form, age: parseInt(form.age, 10) } });
+      localStorage.setItem("foyer_pending_email", form.email.trim().toLowerCase());
       setMode("verify");
     } catch (e) { setErr(e.message); }
     setBusy(false);
@@ -178,6 +204,7 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
     setErr(""); setBusy(true);
     try {
       const { token, user } = await api("/api/auth/verify", { method: "POST", body: { email: form.email, code } });
+      localStorage.removeItem("foyer_pending_email");
       /* salva l'avatar scelto */
       await api("/api/me", { method: "PATCH", token, body: { avatar } });
       onAuthed(token, { ...user, avatar });
@@ -215,7 +242,14 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
             <BtnPrimary onClick={doVerify} disabled={busy} className="w-full mt-4 py-3.5 text-base disabled:opacity-50">
               {busy ? "Verifico…" : "Verifica ed entra"}
             </BtnPrimary>
-            <button onClick={() => setMode("register")} className="w-full py-2 mt-1 text-neutral-400 text-sm hover:text-neutral-600">← Torna indietro</button>
+            <div className="flex items-center justify-between mt-2">
+              <button onClick={resendCode} disabled={busy} className="text-neutral-400 text-sm hover:text-neutral-600 disabled:opacity-50">
+                Non arrivato? Reinvia codice
+              </button>
+              <button onClick={startOver} className="text-neutral-400 text-sm hover:text-neutral-600">
+                Ricomincia con un’altra email
+              </button>
+            </div>
           </>
         ) : mode === "login" ? (
           <>
