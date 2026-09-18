@@ -14,7 +14,7 @@ const FONT_CSS = `
 .snap-y-strong { scroll-snap-type: y mandatory; }
 .snap-card { scroll-snap-align: start; scroll-snap-stop: always; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
-.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px);} to { opacity: 1; transform: translateY(0);} }
 .fade-up { animation: fadeUp .35s ease both; }
 @keyframes pulseDot { 0%,100% { transform: scale(1); opacity:1;} 50% { transform: scale(1.6); opacity:.5;} }
@@ -744,7 +744,7 @@ function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requir
       </div>
 
       {canWrite ? (
-        <div className="border-t border-neutral-200 bg-white p-3 sm:p-4">
+        <div className="border-t border-neutral-200 bg-white p-3 sm:p-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           {pendingImg && (
             <div className="mb-2.5 relative inline-block">
               <img src={pendingImg.src} alt="anteprima allegato" className="h-20 rounded-xl object-cover"
@@ -902,6 +902,13 @@ export default function App() {
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
   const socketRef = useRef(null);
   const activeIdRef = useRef(null);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const isGuest = !token || !me;
   const requireAuth = (reason) => setAuth({ open: true, reason });
@@ -936,7 +943,8 @@ export default function App() {
     s.on("message", (msg) => {
       if (msg.room_id === activeIdRef.current) setMessages((m) => [...m, msg]);
     });
-    s.on("errorMsg", (e) => console.warn("socket:", e));
+    s.on("errorMsg", (e) => { console.warn("socket:", e); setToast(e); });
+    s.on("connect_error", (e) => { console.warn("socket connect_error:", e.message); setToast(`Connessione al server fallita: ${e.message}`); });
     return () => s.disconnect();
   }, [token]);
 
@@ -1003,48 +1011,48 @@ export default function App() {
       : null);
 
   return (
-    <div className="h-screen w-full font-body flex flex-col" style={{ background: "#FAFAFC" }}>
+    <div className="h-screen h-[100dvh] w-full font-body flex flex-col overflow-hidden" style={{ background: "#FAFAFC" }}>
       <style>{FONT_CSS}</style>
 
-      <header className="h-16 shrink-0 flex items-center justify-between px-4 sm:px-6 border-b border-white/10" style={{ background: BANNER_BG }}>
-        <div className="flex items-center gap-3">
-          <button className="md:hidden w-9 h-9 rounded-xl bg-white/10 text-white flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-violet-400"
+      <header className="h-14 sm:h-16 shrink-0 flex items-center justify-between gap-2 px-2.5 sm:px-6 border-b border-white/10 pt-[env(safe-area-inset-top)]" style={{ background: BANNER_BG }}>
+        <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
+          <button className="md:hidden w-8 h-8 sm:w-9 sm:h-9 shrink-0 rounded-xl bg-white/10 text-white flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-violet-400"
             onClick={() => setMobileRailOpen((v) => !v)} aria-label="Apri elenco stanze">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
           </button>
-          <div className="font-display text-white text-2xl font-extrabold tracking-tight select-none">
+          <div className="font-display text-white text-lg sm:text-2xl font-extrabold tracking-tight select-none shrink-0">
             foyer<span style={{ color: "#FF4D8D" }}>.</span>
           </div>
-          <span className="hidden sm:inline font-mono2 text-[11px] text-white/60 mt-1">trova la tua stanza</span>
+          <span className="hidden lg:inline font-mono2 text-[11px] text-white/60 mt-1 truncate">trova la tua stanza</span>
         </div>
 
-        <nav className="flex items-center gap-1 bg-white/10 rounded-2xl p-1">
+        <nav className="flex items-center gap-0.5 sm:gap-1 bg-white/10 rounded-2xl p-1 shrink-0">
           {[["rooms", "Stanze"], ["people", "Persone"]].map(([key, label]) => (
             <button key={key} onClick={() => { setTab(key); setMobileRailOpen(false); }}
-              className={`px-4 sm:px-5 py-2 rounded-xl font-body font-bold text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400 ${tab === key ? "" : "text-white/70 hover:text-white"}`}
+              className={`px-2.5 sm:px-5 py-1.5 sm:py-2 rounded-xl font-body font-bold text-xs sm:text-sm transition-colors whitespace-nowrap focus:outline-none focus:ring-2 focus:ring-violet-400 ${tab === key ? "" : "text-white/70 hover:text-white"}`}
               style={tab === key ? { background: BTN_BG, color: BTN_TXT } : {}}>
               {label}
             </button>
           ))}
         </nav>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 shrink-0">
           {!isGuest && (
-            <span className="font-mono2 text-[12px] text-white bg-white/15 px-2.5 py-1 rounded-full" title="Streak giornaliera">
+            <span className="hidden sm:inline font-mono2 text-[12px] text-white bg-white/15 px-2.5 py-1 rounded-full shrink-0" title="Streak giornaliera">
               🔥 {me.streak || 1}
             </span>
           )}
           {isGuest ? (
-            <BtnPrimary onClick={() => requireAuth("Crea il tuo profilo per sbloccare tutte le stanze.")} className="px-4 py-2 rounded-xl text-sm">
+            <BtnPrimary onClick={() => requireAuth("Crea il tuo profilo per sbloccare tutte le stanze.")} className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm whitespace-nowrap">
               Registrati
             </BtnPrimary>
           ) : (
             <>
               <button onClick={() => setMyProfileOpen(true)} aria-label="Apri il mio profilo"
-                className="rounded-full focus:outline-none focus:ring-2 focus:ring-white hover:opacity-90 transition-opacity">
-                <Avatar src={me.avatar} name={me.name} size={36} ring />
+                className="rounded-full focus:outline-none focus:ring-2 focus:ring-white hover:opacity-90 transition-opacity shrink-0">
+                <Avatar src={me.avatar} name={me.name} size={32} ring />
               </button>
-              <button onClick={logout} className="font-mono2 text-[11px] text-white/70 hover:text-white" title="Esci">esci</button>
+              <button onClick={logout} className="hidden sm:inline font-mono2 text-[11px] text-white/70 hover:text-white shrink-0" title="Esci">esci</button>
             </>
           )}
         </div>
@@ -1098,6 +1106,16 @@ export default function App() {
       <MyProfileSheet open={myProfileOpen} me={me} token={token} onClose={() => setMyProfileOpen(false)}
         onUpdate={(fn) => setMe((m) => (m ? fn(m) : m))} />
       <AuthModal open={auth.open} reason={auth.reason} onClose={() => setAuth({ open: false, reason: "" })} onAuthed={onAuthed} />
+
+      {toast && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[70] max-w-sm w-[90%] fade-up">
+          <div className="rounded-2xl shadow-2xl px-4 py-3 flex items-start gap-3 font-body text-sm"
+            style={{ background: BTN_BG, color: BTN_TXT }}>
+            <span className="flex-1">{toast}</span>
+            <button onClick={() => setToast(null)} aria-label="Chiudi avviso" className="opacity-70 hover:opacity-100">✕</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
