@@ -2,11 +2,17 @@
 <html lang="it">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#c46ef4" />
     <title>Foyer — trova la tua stanza</title>
     <!-- Tailwind via CDN: perfetto per i test; per la produzione vera
          conviene l'installazione con PostCSS (tailwindcss.com/docs) -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      html, body { overscroll-behavior-y: none; height: 100%; }
+      body { margin: 0; -webkit-tap-highlight-color: transparent; }
+      #root { height: 100%; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
