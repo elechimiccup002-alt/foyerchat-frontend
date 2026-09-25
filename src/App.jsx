@@ -89,7 +89,7 @@ function compressImage(file, maxSide = 900, quality = 0.75) {
 function Avatar({ src, name = "", size = 40, ring = false, online = false }) {
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <img src={src || AVATAR_CHOICES[0]} alt={name} className="rounded-full object-cover w-full h-full"
+      <img src={src ? assetUrl(src) : AVATAR_CHOICES[0]} alt={name} className="rounded-full object-cover w-full h-full"
         style={ring ? { boxShadow: "0 0 0 2px #fff, 0 0 0 4px #6C4DFF55" } : {}} />
       {online && (
         <span className="absolute bottom-0 right-0 rounded-full border-2 border-white"
