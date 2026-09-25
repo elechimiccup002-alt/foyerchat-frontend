@@ -121,6 +121,14 @@ function EyeIcon({ size = 14 }) {
     </svg>
   );
 }
+function PencilIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+    </svg>
+  );
+}
+
 function HeartIcon({ filled, size = 18 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? "#FF4D8D" : "none"} stroke={filled ? "#FF4D8D" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -142,7 +150,7 @@ function BtnPrimary({ children, className = "", ...rest }) {
 /* ———— autenticazione (registrazione + verifica + login) ———— */
 function AuthModal({ open, reason, onClose, onAuthed }) {
   const [mode, setMode] = useState("register"); // register | verify | login
-  const [form, setForm] = useState({ name: "", age: "", email: "", password: "", handle: "", city: "" });
+  const [form, setForm] = useState({ age: "", email: "", password: "", handle: "", city: "" });
   const [avatar, setAvatar] = useState(AVATAR_CHOICES[0]);
   const [adult, setAdult] = useState(false);
   const [code, setCode] = useState("");
@@ -165,7 +173,7 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
 
   const startOver = () => {
     localStorage.removeItem("foyer_pending_email");
-    setForm({ name: "", age: "", email: "", password: "", handle: "", city: "" });
+    setForm({ age: "", email: "", password: "", handle: "", city: "" });
     setMode("register"); setErr(""); setCode("");
   };
 
@@ -273,14 +281,11 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
             <div className="font-display text-2xl font-extrabold text-neutral-900">Crea il tuo profilo</div>
             <p className="text-neutral-500 text-sm mt-1">{reason}</p>
             <div className="mt-5 space-y-3.5">
-              <div className="flex gap-3">
-                <input value={form.name} onChange={set("name")} placeholder="Nome" className={input} />
-                <input value={form.age} onChange={(e) => setForm((f) => ({ ...f, age: e.target.value.replace(/\D/g, "") }))}
-                  placeholder="Età" inputMode="numeric" className="w-20 rounded-xl border border-neutral-200 px-4 py-3 text-[15px] outline-none focus:ring-2 focus:ring-violet-400" />
-              </div>
+              <input value={form.handle} onChange={set("handle")} placeholder="Nickname (es. luca.rm)" className={input} />
+              <input value={form.age} onChange={(e) => setForm((f) => ({ ...f, age: e.target.value.replace(/\D/g, "") }))}
+                placeholder="Età" inputMode="numeric" className={input} />
               <input value={form.email} onChange={set("email")} placeholder="Email" type="email" className={input} />
               <input value={form.password} onChange={set("password")} placeholder="Password (min 8 caratteri)" type="password" className={input} />
-              <input value={form.handle} onChange={set("handle")} placeholder="Handle (es. luca.rm)" className={input} />
               <input value={form.city} onChange={set("city")} placeholder="Città (facoltativa)" className={input} />
 
               <div>
@@ -329,6 +334,27 @@ function ProfileSheet({ user, token, onClose, onMessage }) {
   }, [user, onClose]);
 
   if (!user) return null;
+
+  /* profilo privato: il backend restituisce solo nickname/età, senza foto
+     né bio — mostriamo un placeholder invece del profilo completo */
+  if (user.private) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+        <div onClick={(e) => e.stopPropagation()}
+          className="relative w-full sm:max-w-sm bg-white sm:rounded-3xl rounded-t-3xl p-8 fade-up shadow-2xl font-body text-center">
+          <button onClick={onClose} aria-label="Chiudi" title="Chiudi (ESC)"
+            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-neutral-100 text-neutral-500 flex items-center justify-center hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-violet-400">✕</button>
+          <div className="w-16 h-16 mx-auto rounded-full flex items-center justify-center mb-4 mt-2" style={{ background: BTN_BG, color: BTN_TXT }}>
+            <LockIcon size={26} />
+          </div>
+          <div className="font-display text-2xl font-extrabold text-neutral-900">@{user.handle}, {user.age}</div>
+          <p className="font-body text-neutral-500 mt-2">Questo profilo è privato.</p>
+        </div>
+      </div>
+    );
+  }
+
   const hero = user.photos?.[0] ? assetUrl(user.photos[0].url) : FALLBACK_PHOTO(user.id);
 
   const toggleLike = async (idx) => {
@@ -355,7 +381,7 @@ function ProfileSheet({ user, token, onClose, onMessage }) {
           <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between">
             <div>
               <div className="font-display text-white text-3xl font-bold leading-none">{user.name}, {user.age}</div>
-              <div className="font-mono2 text-white/80 text-xs mt-1.5">@{user.handle} · {user.city || "—"}</div>
+              <div className="font-mono2 text-white/80 text-xs mt-1.5">@{user.handle}</div>
             </div>
             <Avatar src={user.avatar} name={user.name} size={52} ring />
           </div>
@@ -433,10 +459,14 @@ const PROMPT_IDEAS = [
 
 function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
   const fileRef = useRef(null);
+  const avatarInputRef = useRef(null);
   const [bio, setBio] = useState("");
   const [vibe, setVibe] = useState("");
   const [editing, setEditing] = useState(false);
   const [prompts, setPrompts] = useState([]);
+  const [avatarHover, setAvatarHover] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarDragOver, setAvatarDragOver] = useState(false);
   const [editingPrompts, setEditingPrompts] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -483,6 +513,56 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
     } catch (er) { setErr(er.message); }
   };
 
+  /* toggle "visibile nello swipe" per una singola foto: resta comunque
+     visibile a chi apre il profilo completo */
+  const toggleDeck = async (photo) => {
+    const next = !photo.deck;
+    onUpdate((m) => ({ ...m, photos: (m.photos || []).map((p) => (p.id === photo.id ? { ...p, deck: next } : p)) }));
+    try {
+      await api(`/api/me/photos/${photo.id}`, { method: "PATCH", token, body: { deck: next } });
+    } catch (er) {
+      /* rollback se la chiamata fallisce */
+      onUpdate((m) => ({ ...m, photos: (m.photos || []).map((p) => (p.id === photo.id ? { ...p, deck: !next } : p)) }));
+      setErr(er.message);
+    }
+  };
+
+  const togglePrivate = async () => {
+    const next = !me.private;
+    onUpdate((m) => ({ ...m, private: next }));
+    try {
+      await api("/api/me", { method: "PATCH", token, body: { private: next } });
+    } catch (er) {
+      onUpdate((m) => ({ ...m, private: !next }));
+      setErr(er.message);
+    }
+  };
+
+  const uploadAvatarFile = async (file) => {
+    if (!file || !file.type?.startsWith("image/")) return;
+    setAvatarBusy(true); setErr("");
+    try {
+      const fd = new FormData();
+      fd.append("avatar", file);
+      const res = await api("/api/me/avatar", { method: "POST", token, body: fd, formData: true });
+      onUpdate((m) => ({ ...m, avatar: res.avatar }));
+    } catch (er) { setErr(er.message); }
+    setAvatarBusy(false);
+  };
+
+  const onAvatarInputChange = (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (f) uploadAvatarFile(f);
+  };
+
+  const onAvatarDrop = (e) => {
+    e.preventDefault();
+    setAvatarDragOver(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) uploadAvatarFile(f);
+  };
+
   const saveEdits = async () => {
     setBusy(true); setErr("");
     try {
@@ -517,10 +597,33 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
         <div className="relative h-48" style={{ background: GRAD }}>
           <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between">
             <div>
-              <div className="font-display text-white text-3xl font-bold leading-none">{me.name}, {me.age}</div>
-              <div className="font-mono2 text-white/80 text-xs mt-1.5">@{me.handle} · {me.city || "—"}</div>
+              <div className="font-display text-white text-3xl font-bold leading-none">@{me.handle}, {me.age}</div>
+              <div className="font-mono2 text-white/80 text-xs mt-1.5">nickname pubblico</div>
             </div>
-            <Avatar src={me.avatar} name={me.name} size={56} ring />
+            <div
+              className="relative rounded-full cursor-pointer"
+              onMouseEnter={() => setAvatarHover(true)}
+              onMouseLeave={() => setAvatarHover(false)}
+              onClick={() => avatarInputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setAvatarDragOver(true); }}
+              onDragLeave={() => setAvatarDragOver(false)}
+              onDrop={onAvatarDrop}
+              role="button"
+              tabIndex={0}
+              aria-label="Cambia foto profilo: clicca o trascina un'immagine qui"
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") avatarInputRef.current?.click(); }}>
+              <Avatar src={me.avatar} name={me.handle} size={56} ring />
+              {(avatarHover || avatarDragOver || avatarBusy) && (
+                <div className="absolute inset-0 rounded-full flex items-center justify-center bg-black/45 text-white transition-opacity">
+                  {avatarBusy ? (
+                    <span className="font-mono2 text-[9px]">…</span>
+                  ) : (
+                    <PencilIcon size={18} />
+                  )}
+                </div>
+              )}
+              <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={onAvatarInputChange} />
+            </div>
           </div>
         </div>
 
@@ -606,6 +709,15 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
                   <button onClick={() => removePhoto(p)} aria-label={`Elimina foto ${idx + 1}`}
                     className="absolute top-1.5 right-1.5 w-7 h-7 rounded-full bg-black/60 text-white text-xs flex items-center justify-center hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-white">🗑</button>
                   {idx === 0 && <span className="absolute bottom-1.5 left-1.5 font-mono2 text-[9px] text-white bg-black/60 rounded px-1.5 py-0.5">principale</span>}
+                  <button
+                    onClick={() => toggleDeck(p)}
+                    aria-label={p.deck ? "Nascondi questa foto dallo swipe" : "Mostra questa foto nello swipe"}
+                    title={p.deck ? "Visibile nello swipe" : "Nascosta dallo swipe"}
+                    className="absolute top-1.5 left-1.5 w-9 h-5 rounded-full flex items-center px-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-white"
+                    style={{ background: p.deck ? BTN_BG : "rgba(255,255,255,0.35)" }}>
+                    <span className="w-4 h-4 rounded-full bg-white shadow transition-transform"
+                      style={{ transform: p.deck ? "translateX(16px)" : "translateX(0)" }} />
+                  </button>
                 </div>
               ))}
               {photos.length < 6 && (
@@ -617,10 +729,35 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
               )}
             </div>
             <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={addPhotos} />
-            <p className="font-body text-[12px] text-neutral-400 mt-2">La prima foto è quella principale. Massimo 6 foto, 5MB l'una.</p>
+            <p className="font-body text-[12px] text-neutral-400 mt-2">La prima foto è quella principale. Massimo 6 foto, 5MB l'una. Il tocco in alto a sinistra su ogni foto accende/spegne la sua visibilità nello swipe di Persone — resta comunque visibile a chi apre il tuo profilo completo.</p>
           </div>
 
           {err && <div className="text-sm text-pink-600 font-medium">{err}</div>}
+
+          {/* privacy: profilo privato o no */}
+          <button
+            onClick={togglePrivate}
+            className="w-full flex items-center justify-between gap-4 rounded-2xl border border-neutral-200 p-4 bg-neutral-50 text-left focus:outline-none focus:ring-2 focus:ring-pink-400">
+            <span className="flex items-center gap-3">
+              <span className="shrink-0" style={{ color: me.private ? "#FF4D8D" : "#a3a3a3" }}>
+                <LockIcon size={20} />
+              </span>
+              <span>
+                <span className="block font-display font-bold text-neutral-900">Profilo privato</span>
+                <span className="block font-body text-[13px] text-neutral-500">
+                  {me.private
+                    ? "Chi apre il tuo profilo da una chat vede solo che è privato."
+                    : "Chiunque apra il tuo profilo vede foto, bio e prompt."}
+                </span>
+              </span>
+            </span>
+            <span className="shrink-0 w-12 h-7 rounded-full flex items-center px-1 transition-colors"
+              style={{ background: me.private ? BTN_BG : "#e5e5e5" }}>
+              <span className="w-5 h-5 rounded-full bg-white shadow transition-transform"
+                style={{ transform: me.private ? "translateX(20px)" : "translateX(0)", background: me.private ? BTN_TXT : "white" }} />
+            </span>
+          </button>
+
           <div className="rounded-xl bg-neutral-50 border border-neutral-200 px-3.5 py-2.5 font-mono2 text-[11px] text-neutral-500">
             ✉️ {me.email} · account verificato
           </div>
@@ -805,7 +942,9 @@ function PeopleDeck({ people, onOpenProfile }) {
   return (
     <div className="h-full overflow-y-auto snap-y-strong no-scrollbar">
       {people.map((p, i) => {
-        const hero = p.photos?.[0] ? assetUrl(p.photos[0].url) : FALLBACK_PHOTO(p.id);
+        /* solo le foto con il toggle "swipe" acceso possono comparire qui */
+        const deckPhotos = (p.photos || []).filter((ph) => ph.deck);
+        const hero = deckPhotos[0] ? assetUrl(deckPhotos[0].url) : FALLBACK_PHOTO(p.id);
         return (
           <section key={p.id} className="snap-card h-full relative flex items-stretch justify-center p-3 sm:p-5">
             <div className="relative w-full max-w-md rounded-[28px] overflow-hidden shadow-xl">
@@ -825,7 +964,7 @@ function PeopleDeck({ people, onOpenProfile }) {
                   <div className="font-display text-white text-4xl font-extrabold leading-none tracking-tight">
                     {p.name} <span className="font-semibold text-white/70 text-3xl">{p.age}</span>
                   </div>
-                  <div className="font-mono2 text-white/70 text-xs mt-2">@{p.handle} · {p.city || "—"}</div>
+                  <div className="font-mono2 text-white/70 text-xs mt-2">@{p.handle}</div>
                 </div>
                 {p.bio && <p className="font-body text-white/90 text-[15px] leading-snug max-w-[36ch]">{p.bio}</p>}
                 <button onClick={() => onOpenProfile(p)}
@@ -1096,7 +1235,7 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <PeopleDeck people={people} onOpenProfile={setProfile} />
+              <PeopleDeck people={people} onOpenProfile={(p) => openProfileById(p.id)} />
             )}
           </main>
         )}
