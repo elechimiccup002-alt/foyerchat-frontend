@@ -3,7 +3,7 @@
    Auth email+password con verifica, profili e foto dal server,
    chat in tempo reale via Socket.io, DM, like ai prompt.
 ——————————————————————————————————————————— */
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { api, connectSocket, assetUrl } from "./api.js";
 
 const FONT_CSS = `
@@ -28,7 +28,6 @@ const BTN_TXT = "#fd94e6";
 const BANNER_BG = "#c46ef4";
 
 const AVATAR_CHOICES = [5, 33, 51, 8, 20, 64].map((n) => `https://i.pravatar.cc/300?img=${n}`);
-const FALLBACK_PHOTO = (seedStr) => `https://picsum.photos/seed/${seedStr}/700/1000`;
 
 const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -107,6 +106,16 @@ function Badge({ children }) {
   );
 }
 
+function GenderChip({ gender }) {
+  if (!gender) return null;
+  return (
+    <span className="inline-flex items-center justify-center w-6 h-6 rounded-full font-mono2 text-[11px] font-bold align-middle"
+      style={{ background: BTN_BG, color: BTN_TXT }}>
+      {gender}
+    </span>
+  );
+}
+
 function LockIcon({ size = 14 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -137,6 +146,141 @@ function HeartIcon({ filled, size = 18 }) {
   );
 }
 
+function UsersIcon({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
+      <path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
+    </svg>
+  );
+}
+
+function DotsIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>
+    </svg>
+  );
+}
+
+/* stato della relazione tra me e un altro utente, ricavato dalle liste del server */
+const EMPTY_RELATIONS = { friends: [], incoming: [], outgoing: [], blocked: [], muted: [] };
+function relStatus(userId, relations) {
+  const has = (list) => (list || []).some((u) => u.id === userId);
+  return {
+    isFriend: has(relations.friends),
+    incoming: has(relations.incoming),   // mi ha mandato una richiesta
+    outgoing: has(relations.outgoing),   // gli ho mandato una richiesta
+    blocked: has(relations.blocked),
+    muted: has(relations.muted),
+  };
+}
+
+const outlineBtn = "rounded-2xl font-body font-bold text-sm border border-neutral-200 text-neutral-600 hover:bg-neutral-50 transition-colors focus:outline-none focus:ring-2 focus:ring-pink-400";
+
+/* pulsante "amicizia" che cambia in base allo stato (aggiungi / accetta / annulla / amici) */
+function FriendControl({ userId, relations, actions }) {
+  const st = relStatus(userId, relations);
+  if (st.blocked) {
+    return <BtnPrimary onClick={() => actions.unblock(userId)} className="w-full py-3 text-sm">Sblocca</BtnPrimary>;
+  }
+  if (st.isFriend) {
+    return (
+      <div className="w-full py-3 rounded-2xl text-center text-sm font-bold border border-neutral-200 text-neutral-600 flex items-center justify-center gap-2">
+        <UsersIcon size={16} /> Amici
+      </div>
+    );
+  }
+  if (st.incoming) {
+    return (
+      <div className="flex gap-2">
+        <BtnPrimary onClick={() => actions.accept(userId)} className="flex-1 py-3 text-sm">Accetta richiesta</BtnPrimary>
+        <button onClick={() => actions.decline(userId)} className={`flex-1 py-3 ${outlineBtn}`}>Rifiuta</button>
+      </div>
+    );
+  }
+  if (st.outgoing) {
+    return <button onClick={() => actions.decline(userId)} className={`w-full py-3 ${outlineBtn}`}>Richiesta inviata · Annulla</button>;
+  }
+  return <BtnPrimary onClick={() => actions.addFriend(userId)} className="w-full py-3 text-sm">Aggiungi agli amici</BtnPrimary>;
+}
+
+function SheetItem({ label, onClick, danger }) {
+  return (
+    <button onClick={onClick}
+      className={`w-full text-left px-4 py-3 rounded-xl font-body font-semibold text-[15px] transition-colors focus:outline-none focus:ring-2 focus:ring-pink-400 ${
+        danger ? "text-pink-600 hover:bg-pink-50" : "text-neutral-800 hover:bg-neutral-100"}`}>
+      {label}
+    </button>
+  );
+}
+
+/* menu azioni su un utente: amico / blocca / silenzia.
+   Amico → solo "silenzia" o "elimina amico". Non amico → aggiungi, blocca, silenzia. */
+function UserActionSheet({ target, relations, actions, onClose, hideViewProfile }) {
+  const [confirm, setConfirm] = useState(null);
+
+  useEffect(() => { setConfirm(null); }, [target?.id]);
+  useEffect(() => {
+    if (!target) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [target, onClose]);
+
+  if (!target) return null;
+  const st = relStatus(target.id, relations);
+  const run = async (fn) => { await fn(target.id); onClose(); };
+  const dangerous = (key, label, confirmLabel, fn) => (
+    <SheetItem danger label={confirm === key ? confirmLabel : label}
+      onClick={() => (confirm === key ? run(fn) : setConfirm(key))} />
+  );
+  const muteItem = st.muted
+    ? <SheetItem label="Riattiva notifiche" onClick={() => run(actions.unmute)} />
+    : <SheetItem label="Silenzia" onClick={() => run(actions.mute)} />;
+
+  return (
+    <div className="fixed inset-0 z-[65] flex items-end sm:items-center justify-center">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div onClick={(e) => e.stopPropagation()}
+        className="relative w-full sm:max-w-xs bg-white sm:rounded-3xl rounded-t-3xl p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] fade-up shadow-2xl font-body">
+        <div className="flex items-center gap-3 px-3 py-3">
+          <Avatar src={target.avatar} name={target.name} size={40} />
+          <div className="min-w-0">
+            <div className="font-display font-bold text-neutral-900 truncate">@{target.handle}</div>
+            <div className="font-mono2 text-[11px] text-neutral-400">
+              {st.isFriend ? "amico" : st.incoming ? "ti ha chiesto l'amicizia" : st.outgoing ? "richiesta inviata" : st.blocked ? "bloccato" : "non è nei tuoi amici"}
+            </div>
+          </div>
+        </div>
+        <div className="border-t border-neutral-100 pt-1 space-y-0.5">
+          {!hideViewProfile && !st.blocked && (
+            <SheetItem label="Vedi profilo" onClick={() => { onClose(); actions.openProfile(target.id); }} />
+          )}
+          {st.blocked ? (
+            <SheetItem label="Sblocca" onClick={() => run(actions.unblock)} />
+          ) : st.isFriend ? (
+            <>
+              {muteItem}
+              {dangerous("remove", "Elimina amico", "Tocca ancora per eliminare", actions.decline)}
+            </>
+          ) : (
+            <>
+              {st.incoming && <SheetItem label="Accetta richiesta" onClick={() => run(actions.accept)} />}
+              {st.incoming && <SheetItem label="Rifiuta richiesta" onClick={() => run(actions.decline)} />}
+              {st.outgoing && <SheetItem label="Annulla richiesta" onClick={() => run(actions.decline)} />}
+              {!st.incoming && !st.outgoing && <SheetItem label="Aggiungi agli amici" onClick={() => run(actions.addFriend)} />}
+              {muteItem}
+              {dangerous("block", "Blocca", "Tocca ancora per bloccare", actions.block)}
+            </>
+          )}
+        </div>
+        <button onClick={onClose} className="w-full mt-1 py-3 text-neutral-400 text-sm font-semibold hover:text-neutral-600">Annulla</button>
+      </div>
+    </div>
+  );
+}
+
 function BtnPrimary({ children, className = "", ...rest }) {
   return (
     <button {...rest}
@@ -150,7 +294,7 @@ function BtnPrimary({ children, className = "", ...rest }) {
 /* ———— autenticazione (registrazione + verifica + login) ———— */
 function AuthModal({ open, reason, onClose, onAuthed }) {
   const [mode, setMode] = useState("register"); // register | verify | login
-  const [form, setForm] = useState({ age: "", email: "", password: "", handle: "", city: "" });
+  const [form, setForm] = useState({ age: "", email: "", password: "", handle: "", city: "", gender: "" });
   const [avatar, setAvatar] = useState(AVATAR_CHOICES[0]);
   const [adult, setAdult] = useState(false);
   const [code, setCode] = useState("");
@@ -173,7 +317,7 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
 
   const startOver = () => {
     localStorage.removeItem("foyer_pending_email");
-    setForm({ age: "", email: "", password: "", handle: "", city: "" });
+    setForm({ age: "", email: "", password: "", handle: "", city: "", gender: "" });
     setMode("register"); setErr(""); setCode("");
   };
 
@@ -198,6 +342,7 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
 
   const doRegister = async () => {
     setErr("");
+    if (!form.gender) return setErr("Seleziona F o M.");
     if (!adult) return setErr("Conferma di avere almeno 18 anni.");
     setBusy(true);
     try {
@@ -289,6 +434,21 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
               <input value={form.city} onChange={set("city")} placeholder="Città (facoltativa)" className={input} />
 
               <div>
+                <div className="font-mono2 text-[11px] uppercase tracking-widest text-neutral-400 mb-2">genere</div>
+                <div className="flex gap-2">
+                  {["F", "M"].map((g) => (
+                    <button key={g} type="button" onClick={() => setForm((f) => ({ ...f, gender: g }))}
+                      className={`flex-1 py-2.5 rounded-xl font-body font-bold text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400 ${
+                        form.gender === g ? "border-transparent" : "border-neutral-200 text-neutral-500 hover:border-pink-200"
+                      }`}
+                      style={form.gender === g ? { background: BTN_BG, color: BTN_TXT } : {}}>
+                      {g}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
                 <div className="font-mono2 text-[11px] uppercase tracking-widest text-neutral-400 mb-2">scegli un avatar</div>
                 <div className="flex gap-2 flex-wrap">
                   {AVATAR_CHOICES.map((src) => (
@@ -321,7 +481,7 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
 }
 
 /* ———— foglio profilo altrui ———— */
-function ProfileSheet({ user, token, onClose, onMessage }) {
+function ProfileSheet({ user, token, onClose, onMessage, relations, actions, onOpenActions }) {
   const [likes, setLikes] = useState({}); // idx -> {liked, count}
 
   useEffect(() => {
@@ -335,27 +495,35 @@ function ProfileSheet({ user, token, onClose, onMessage }) {
 
   if (!user) return null;
 
-  /* profilo privato: il backend restituisce solo nickname/età, senza foto
-     né bio — mostriamo un placeholder invece del profilo completo */
-  if (user.private) {
+  /* vista limitata (profilo privato e non siamo amici): il backend manda solo
+     nickname/età/genere — niente foto né bio. Si può comunque chiedere l'amicizia. */
+  if (user.restricted) {
     return (
       <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
         <div onClick={(e) => e.stopPropagation()}
           className="relative w-full sm:max-w-sm bg-white sm:rounded-3xl rounded-t-3xl p-8 fade-up shadow-2xl font-body text-center">
-          <button onClick={onClose} aria-label="Chiudi" title="Chiudi (ESC)"
-            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-neutral-100 text-neutral-500 flex items-center justify-center hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-violet-400">✕</button>
+          <div className="absolute top-4 right-4 flex gap-2">
+            <button onClick={() => onOpenActions(user)} aria-label="Altre azioni" title="Altre azioni"
+              className="w-9 h-9 rounded-full bg-neutral-100 text-neutral-500 flex items-center justify-center hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-violet-400"><DotsIcon size={16} /></button>
+            <button onClick={onClose} aria-label="Chiudi" title="Chiudi (ESC)"
+              className="w-9 h-9 rounded-full bg-neutral-100 text-neutral-500 flex items-center justify-center hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-violet-400">✕</button>
+          </div>
           <div className="w-16 h-16 mx-auto rounded-full flex items-center justify-center mb-4 mt-2" style={{ background: BTN_BG, color: BTN_TXT }}>
             <LockIcon size={26} />
           </div>
-          <div className="font-display text-2xl font-extrabold text-neutral-900">@{user.handle}, {user.age}</div>
-          <p className="font-body text-neutral-500 mt-2">Questo profilo è privato.</p>
+          <div className="font-display text-2xl font-extrabold text-neutral-900 flex items-center justify-center gap-2">
+            @{user.handle}, {user.age} <GenderChip gender={user.gender} />
+          </div>
+          <p className="font-body text-neutral-500 mt-2">Questo profilo è privato. Diventa amico per vederlo.</p>
+          <div className="mt-5 text-left"><FriendControl userId={user.id} relations={relations} actions={actions} /></div>
         </div>
       </div>
     );
   }
 
-  const hero = user.photos?.[0] ? assetUrl(user.photos[0].url) : FALLBACK_PHOTO(user.id);
+  /* nessuna foto di riempimento casuale: senza foto visibili si mostra il gradiente del sito */
+  const hero = user.photos?.[0] ? assetUrl(user.photos[0].url) : null;
 
   const toggleLike = async (idx) => {
     try {
@@ -370,17 +538,23 @@ function ProfileSheet({ user, token, onClose, onMessage }) {
       <div onClick={(e) => e.stopPropagation()}
         className="relative w-full sm:max-w-lg max-h-[92vh] overflow-y-auto overscroll-contain no-scrollbar bg-white sm:rounded-3xl rounded-t-3xl fade-up shadow-2xl">
         {/* X sempre visibile anche scorrendo (+ ESC) */}
-        <div className="sticky top-3 z-20 h-0 flex justify-end pr-3">
+        <div className="sticky top-3 z-20 h-0 flex justify-end gap-2 pr-3">
+          <button onClick={() => onOpenActions(user)} aria-label="Altre azioni: amico, silenzia, blocca" title="Altre azioni"
+            className="w-10 h-10 rounded-full bg-black/50 text-white backdrop-blur flex items-center justify-center hover:bg-black/70 shadow-lg focus:outline-none focus:ring-2 focus:ring-white"><DotsIcon size={18} /></button>
           <button onClick={onClose} aria-label="Chiudi profilo (o premi ESC)" title="Chiudi (ESC)"
             className="w-10 h-10 rounded-full bg-black/50 text-white backdrop-blur flex items-center justify-center hover:bg-black/70 shadow-lg focus:outline-none focus:ring-2 focus:ring-white">✕</button>
         </div>
 
         <div className="relative h-72">
-          <img src={hero} alt="" className="w-full h-full object-cover" />
+          {hero
+            ? <img src={hero} alt="" className="w-full h-full object-cover" />
+            : <div className="w-full h-full" style={{ background: GRAD }} />}
           <div className="absolute inset-0" style={{ background: "linear-gradient(180deg,transparent 40%,rgba(0,0,0,.65))" }} />
           <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between">
             <div>
-              <div className="font-display text-white text-3xl font-bold leading-none">{user.name}, {user.age}</div>
+              <div className="font-display text-white text-3xl font-bold leading-none flex items-center gap-2">
+                {user.name}, {user.age} <GenderChip gender={user.gender} />
+              </div>
               <div className="font-mono2 text-white/80 text-xs mt-1.5">@{user.handle}</div>
             </div>
             <Avatar src={user.avatar} name={user.name} size={52} ring />
@@ -391,6 +565,9 @@ function ProfileSheet({ user, token, onClose, onMessage }) {
           <div className="flex flex-wrap gap-2 items-center">
             <Badge>✉️ email verificata</Badge>
             {user.streak > 1 && <Badge>🔥 streak {user.streak}</Badge>}
+            <span className="font-mono2 text-[11px] px-2.5 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-neutral-700 flex items-center gap-1.5">
+              <UsersIcon size={12} /> {user.friend_count ?? 0} amici
+            </span>
           </div>
 
           {(user.vibe || user.bio) && (
@@ -431,18 +608,114 @@ function ProfileSheet({ user, token, onClose, onMessage }) {
               <div className="font-mono2 text-[11px] uppercase tracking-widest text-neutral-400 mb-2">foto</div>
               <div className="grid grid-cols-3 gap-1.5 rounded-2xl overflow-hidden">
                 {user.photos.map((p) => (
-                  <img key={p.id} src={assetUrl(p.url)} alt="" className="aspect-square object-cover w-full hover:opacity-90 transition-opacity" />
+                  <div key={p.id} className="relative aspect-square">
+                    <img src={assetUrl(p.url)} alt="" className="w-full h-full object-cover hover:opacity-90 transition-opacity" />
+                    {p.friends_only && (
+                      <span title="Visibile solo agli amici" className="absolute top-1.5 left-1.5 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center">
+                        <UsersIcon size={12} />
+                      </span>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
           )}
 
+          <FriendControl userId={user.id} relations={relations} actions={actions} />
           <BtnPrimary onClick={() => onMessage(user, null)} className="w-full py-3.5 text-base">
             Scrivi a {user.name}
           </BtnPrimary>
           <div className="h-2" />
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ———— sezione "Amici" nel mio profilo ———— */
+function PersonRow({ u, onOpen, children }) {
+  return (
+    <div className="flex items-center gap-2">
+      <button onClick={onOpen}
+        className="flex items-center gap-3 min-w-0 flex-1 text-left rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400">
+        <Avatar src={u.avatar} name={u.name} size={36} />
+        <span className="block font-display font-bold text-neutral-900 truncate">@{u.handle}</span>
+      </button>
+      {children}
+    </div>
+  );
+}
+
+function FriendsSection({ relations, actions }) {
+  const { friends, incoming, outgoing, blocked, muted } = relations;
+  const pill = "px-3 py-1.5 rounded-full text-xs font-bold";
+  const ghost = `${pill} border border-neutral-200 text-neutral-600 hover:bg-white transition-colors`;
+  return (
+    <div className="rounded-2xl border border-neutral-200 p-4 bg-neutral-50 space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="font-mono2 text-[11px] uppercase tracking-widest text-neutral-400">amici · {friends.length}</div>
+        <span className="text-neutral-400"><UsersIcon size={16} /></span>
+      </div>
+
+      {incoming.length > 0 && (
+        <div className="space-y-2.5">
+          <div className="font-body text-[13px] font-bold text-neutral-700">Richieste ricevute · {incoming.length}</div>
+          {incoming.map((u) => (
+            <PersonRow key={u.id} u={u} onOpen={() => actions.openProfile(u.id)}>
+              <BtnPrimary onClick={() => actions.accept(u.id)} className={pill}>Accetta</BtnPrimary>
+              <button onClick={() => actions.decline(u.id)} className={ghost}>Rifiuta</button>
+            </PersonRow>
+          ))}
+        </div>
+      )}
+
+      {friends.length > 0 ? (
+        <div className="space-y-2.5">
+          {friends.map((u) => (
+            <PersonRow key={u.id} u={u} onOpen={() => actions.openProfile(u.id)}>
+              <button onClick={() => actions.openActions(u)} aria-label={`Azioni per ${u.handle}`} title="Silenzia o elimina amico"
+                className="w-8 h-8 rounded-full text-neutral-400 hover:bg-white hover:text-neutral-700 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-violet-400">
+                <DotsIcon size={16} />
+              </button>
+            </PersonRow>
+          ))}
+        </div>
+      ) : incoming.length === 0 && (
+        <p className="text-neutral-400 text-sm">Nessun amico ancora. Apri un profilo o una chat e tocca "Aggiungi agli amici".</p>
+      )}
+
+      {outgoing.length > 0 && (
+        <div className="space-y-2.5">
+          <div className="font-body text-[13px] font-bold text-neutral-700">In attesa di risposta · {outgoing.length}</div>
+          {outgoing.map((u) => (
+            <PersonRow key={u.id} u={u} onOpen={() => actions.openProfile(u.id)}>
+              <button onClick={() => actions.decline(u.id)} className={ghost}>Annulla</button>
+            </PersonRow>
+          ))}
+        </div>
+      )}
+
+      {(blocked.length > 0 || muted.length > 0) && (
+        <details className="group">
+          <summary className="cursor-pointer select-none font-body text-[13px] font-bold text-neutral-500 hover:text-neutral-700">
+            Bloccati e silenziati · {blocked.length + muted.length}
+          </summary>
+          <div className="space-y-2.5 mt-3">
+            {blocked.map((u) => (
+              <PersonRow key={`b-${u.id}`} u={u} onOpen={() => {}}>
+                <span className="font-mono2 text-[10px] text-neutral-400">bloccato</span>
+                <button onClick={() => actions.unblock(u.id)} className={ghost}>Sblocca</button>
+              </PersonRow>
+            ))}
+            {muted.map((u) => (
+              <PersonRow key={`m-${u.id}`} u={u} onOpen={() => actions.openProfile(u.id)}>
+                <span className="font-mono2 text-[10px] text-neutral-400">silenziato</span>
+                <button onClick={() => actions.unmute(u.id)} className={ghost}>Riattiva</button>
+              </PersonRow>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -457,7 +730,7 @@ const PROMPT_IDEAS = [
   "Green flag immediata…",
 ];
 
-function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
+function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActions }) {
   const fileRef = useRef(null);
   const avatarInputRef = useRef(null);
   const [bio, setBio] = useState("");
@@ -513,16 +786,16 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
     } catch (er) { setErr(er.message); }
   };
 
-  /* toggle "visibile nello swipe" per una singola foto: resta comunque
-     visibile a chi apre il profilo completo */
-  const toggleDeck = async (photo) => {
-    const next = !photo.deck;
-    onUpdate((m) => ({ ...m, photos: (m.photos || []).map((p) => (p.id === photo.id ? { ...p, deck: next } : p)) }));
+  /* "Solo amici": se acceso, la foto la vedono solo i miei amici accettati
+     (il server non la manda a nessun altro: né profilo né swipe di Persone) */
+  const toggleFriendsOnly = async (photo) => {
+    const next = !photo.friends_only;
+    const setFlag = (val) => onUpdate((m) => ({ ...m, photos: (m.photos || []).map((p) => (p.id === photo.id ? { ...p, friends_only: val } : p)) }));
+    setFlag(next);
     try {
-      await api(`/api/me/photos/${photo.id}`, { method: "PATCH", token, body: { deck: next } });
+      await api(`/api/me/photos/${photo.id}`, { method: "PATCH", token, body: { friends_only: next } });
     } catch (er) {
-      /* rollback se la chiamata fallisce */
-      onUpdate((m) => ({ ...m, photos: (m.photos || []).map((p) => (p.id === photo.id ? { ...p, deck: !next } : p)) }));
+      setFlag(!next); // rollback se la chiamata fallisce
       setErr(er.message);
     }
   };
@@ -597,7 +870,9 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
         <div className="relative h-48" style={{ background: GRAD }}>
           <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between">
             <div>
-              <div className="font-display text-white text-3xl font-bold leading-none">@{me.handle}, {me.age}</div>
+              <div className="font-display text-white text-3xl font-bold leading-none flex items-center gap-2">
+                @{me.handle}, {me.age} <GenderChip gender={me.gender} />
+              </div>
               <div className="font-mono2 text-white/80 text-xs mt-1.5">nickname pubblico</div>
             </div>
             <div
@@ -708,15 +983,19 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
                   <img src={assetUrl(p.url)} alt={`foto ${idx + 1}`} className="w-full h-full object-cover" />
                   <button onClick={() => removePhoto(p)} aria-label={`Elimina foto ${idx + 1}`}
                     className="absolute top-1.5 right-1.5 w-7 h-7 rounded-full bg-black/60 text-white text-xs flex items-center justify-center hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-white">🗑</button>
-                  {idx === 0 && <span className="absolute bottom-1.5 left-1.5 font-mono2 text-[9px] text-white bg-black/60 rounded px-1.5 py-0.5">principale</span>}
+                  {idx === 0 && <span className="absolute top-1.5 left-1.5 font-mono2 text-[9px] text-white bg-black/60 rounded px-1.5 py-0.5">principale</span>}
                   <button
-                    onClick={() => toggleDeck(p)}
-                    aria-label={p.deck ? "Nascondi questa foto dallo swipe" : "Mostra questa foto nello swipe"}
-                    title={p.deck ? "Visibile nello swipe" : "Nascosta dallo swipe"}
-                    className="absolute top-1.5 left-1.5 w-9 h-5 rounded-full flex items-center px-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-white"
-                    style={{ background: p.deck ? BTN_BG : "rgba(255,255,255,0.35)" }}>
-                    <span className="w-4 h-4 rounded-full bg-white shadow transition-transform"
-                      style={{ transform: p.deck ? "translateX(16px)" : "translateX(0)" }} />
+                    onClick={() => toggleFriendsOnly(p)}
+                    aria-pressed={!!p.friends_only}
+                    aria-label={p.friends_only ? "Foto visibile solo agli amici: tocca per renderla pubblica" : "Foto pubblica: tocca per renderla visibile solo agli amici"}
+                    title="Solo amici"
+                    className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-1 px-1.5 py-1.5 bg-black/60 backdrop-blur-sm text-white focus:outline-none focus:ring-2 focus:ring-white">
+                    <span className="font-body font-semibold text-[10px] leading-none whitespace-nowrap">Solo amici</span>
+                    <span className="w-7 h-4 rounded-full flex items-center px-0.5 shrink-0 transition-colors"
+                      style={{ background: p.friends_only ? BTN_TXT : "rgba(255,255,255,0.35)" }}>
+                      <span className="w-3 h-3 rounded-full shadow transition-transform"
+                        style={{ background: p.friends_only ? BTN_BG : "#fff", transform: p.friends_only ? "translateX(12px)" : "translateX(0)" }} />
+                    </span>
                   </button>
                 </div>
               ))}
@@ -729,10 +1008,13 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
               )}
             </div>
             <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={addPhotos} />
-            <p className="font-body text-[12px] text-neutral-400 mt-2">La prima foto è quella principale. Massimo 6 foto, 5MB l'una. Il tocco in alto a sinistra su ogni foto accende/spegne la sua visibilità nello swipe di Persone — resta comunque visibile a chi apre il tuo profilo completo.</p>
+            <p className="font-body text-[12px] text-neutral-400 mt-2">La prima foto è quella principale. Massimo 6 foto, 5MB l'una. Con "Solo amici" acceso la foto la vedono solo i tuoi amici: a tutti gli altri non compare né aprendo il tuo profilo né nello swipe di Persone.</p>
           </div>
 
           {err && <div className="text-sm text-pink-600 font-medium">{err}</div>}
+
+          {/* amici, richieste, bloccati */}
+          <FriendsSection relations={relations} actions={relActions} />
 
           {/* privacy: profilo privato o no */}
           <button
@@ -746,7 +1028,7 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate }) {
                 <span className="block font-display font-bold text-neutral-900">Profilo privato</span>
                 <span className="block font-body text-[13px] text-neutral-500">
                   {me.private
-                    ? "Chi apre il tuo profilo da una chat vede solo che è privato."
+                    ? "Chi non è tuo amico vede solo che il profilo è privato."
                     : "Chiunque apra il tuo profilo vede foto, bio e prompt."}
                 </span>
               </span>
@@ -809,7 +1091,7 @@ function MessageRow({ msg, mine, onOpenProfile }) {
   );
 }
 
-function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requireAuth }) {
+function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requireAuth, dmOther, onOpenActions }) {
   const [text, setText] = useState("");
   const [pendingImg, setPendingImg] = useState(null);
   const fileRef = useRef(null);
@@ -868,6 +1150,12 @@ function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requir
           </div>
           <div className="font-body text-[13px] text-neutral-500 truncate">{room.topic}</div>
         </div>
+        {isDm && dmOther && (
+          <button onClick={() => onOpenActions(dmOther)} aria-label="Azioni: aggiungi agli amici, silenzia, blocca" title="Amico · Silenzia · Blocca"
+            className="shrink-0 rounded-full hover:ring-2 hover:ring-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-400 transition-shadow">
+            <Avatar src={dmOther.avatar} name={dmOther.name} size={38} />
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-4" style={{ background: "#FAFAFC" }}>
@@ -942,13 +1230,21 @@ function PeopleDeck({ people, onOpenProfile }) {
   return (
     <div className="h-full overflow-y-auto snap-y-strong no-scrollbar">
       {people.map((p, i) => {
-        /* solo le foto con il toggle "swipe" acceso possono comparire qui */
-        const deckPhotos = (p.photos || []).filter((ph) => ph.deck);
-        const hero = deckPhotos[0] ? assetUrl(deckPhotos[0].url) : FALLBACK_PHOTO(p.id);
+        /* il server manda solo le foto che posso vedere: le "solo amici" di chi
+           non è mio amico non arrivano proprio, quindi non possono comparire qui */
+        const hero = p.photos?.[0] ? assetUrl(p.photos[0].url) : null;
         return (
           <section key={p.id} className="snap-card h-full relative flex items-stretch justify-center p-3 sm:p-5">
             <div className="relative w-full max-w-md rounded-[28px] overflow-hidden shadow-xl">
-              <img src={hero} alt={p.name} className="absolute inset-0 w-full h-full object-cover" />
+              {hero ? (
+                <img src={hero} alt={p.name} className="absolute inset-0 w-full h-full object-cover" />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center pb-24" style={{ background: GRAD }}>
+                  {p.restricted
+                    ? <span className="text-white/90"><LockIcon size={64} /></span>
+                    : <Avatar src={p.avatar} name={p.name} size={112} ring />}
+                </div>
+              )}
               <div className="absolute inset-0" style={{ background: "linear-gradient(180deg,rgba(0,0,0,.25) 0%,transparent 30%,transparent 45%,rgba(8,6,20,.88) 100%)" }} />
               <div className="absolute top-0 left-0 right-0 p-5 flex items-center justify-between">
                 <span className="font-mono2 text-[11px] text-white/85 bg-black/30 backdrop-blur px-2.5 py-1 rounded-full">
@@ -961,8 +1257,8 @@ function PeopleDeck({ people, onOpenProfile }) {
               </div>
               <div className="absolute bottom-0 left-0 right-0 p-6 space-y-3.5">
                 <div>
-                  <div className="font-display text-white text-4xl font-extrabold leading-none tracking-tight">
-                    {p.name} <span className="font-semibold text-white/70 text-3xl">{p.age}</span>
+                  <div className="font-display text-white text-4xl font-extrabold leading-none tracking-tight flex items-center gap-2 flex-wrap">
+                    {p.name} <span className="font-semibold text-white/70 text-3xl">{p.age}</span> <GenderChip gender={p.gender} />
                   </div>
                   <div className="font-mono2 text-white/70 text-xs mt-2">@{p.handle}</div>
                 </div>
@@ -982,7 +1278,7 @@ function PeopleDeck({ people, onOpenProfile }) {
 }
 
 /* ———— rail stanze ———— */
-function RoomsRail({ rooms, dms, activeId, onPick }) {
+function RoomsRail({ rooms, dms, activeId, onPick, unread, mutedIds, onAvatar }) {
   return (
     <div className="space-y-6">
       <div>
@@ -1010,12 +1306,22 @@ function RoomsRail({ rooms, dms, activeId, onPick }) {
           <div className="space-y-1">
             {dms.map((d) => {
               const active = d.id === activeId;
+              const muted = mutedIds.has(d.other?.id);
+              const hasUnread = unread.has(d.id) && !muted;
               return (
-                <button key={d.id} onClick={() => onPick(d.id)}
-                  className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-2.5 focus:outline-none focus:ring-2 focus:ring-violet-400 ${active ? "bg-white/12" : "hover:bg-white/6"}`}>
-                  <Avatar src={d.other?.avatar} name={d.other?.name} size={30} online />
-                  <span className={`font-body font-semibold text-[14px] truncate ${active ? "text-white" : "text-white/75"}`}>{d.other?.name}</span>
-                </button>
+                <div key={d.id} className={`flex items-center gap-1 pl-2 pr-3 py-1.5 rounded-xl transition-colors ${active ? "bg-white/12" : "hover:bg-white/6"}`}>
+                  {/* l'icona apre il menu: aggiungi agli amici / silenzia / blocca */}
+                  <button onClick={() => onAvatar(d.other)} aria-label={`Azioni per ${d.other?.name}: amico, silenzia, blocca`} title="Amico · Silenzia · Blocca"
+                    className="rounded-full shrink-0 hover:ring-2 hover:ring-white/40 focus:outline-none focus:ring-2 focus:ring-violet-400 transition-shadow">
+                    <Avatar src={d.other?.avatar} name={d.other?.name} size={30} online />
+                  </button>
+                  <button onClick={() => onPick(d.id)}
+                    className="flex-1 min-w-0 flex items-center gap-2 text-left px-1.5 py-1.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-400">
+                    <span className={`font-body font-semibold text-[14px] truncate ${active ? "text-white" : "text-white/75"}`}>{d.other?.name}</span>
+                    {muted && <span className="text-[11px] shrink-0" title="Silenziato">🔕</span>}
+                    {hasUnread && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#FF4D8D" }} aria-label="Nuovi messaggi" />}
+                  </button>
+                </div>
               );
             })}
           </div>
@@ -1042,6 +1348,15 @@ export default function App() {
   const socketRef = useRef(null);
   const activeIdRef = useRef(null);
   const [toast, setToast] = useState(null);
+  const [relations, setRelations] = useState(EMPTY_RELATIONS);
+  const [actionTarget, setActionTarget] = useState(null);
+  const [unread, setUnread] = useState(() => new Set()); // id delle DM con messaggi non letti
+  /* ref: servono ai listener del socket, che vivono più a lungo di un singolo render */
+  const relationsRef = useRef(EMPTY_RELATIONS);
+  const dmsRef = useRef([]);
+  const meIdRef = useRef(null);
+  const profileIdRef = useRef(null);
+  const refreshRef = useRef({});
 
   useEffect(() => {
     if (!toast) return;
@@ -1068,29 +1383,86 @@ export default function App() {
     }).catch(console.error);
   }, []);
 
-  /* persone + DM quando loggato */
+  /* ricarichi dal server: feed Persone, DM, amici/bloccati, profilo eventualmente aperto */
+  const refreshPeople = useCallback(() => {
+    if (!token) return Promise.resolve();
+    return api("/api/people", { token }).then(setPeople).catch(console.error);
+  }, [token]);
+  const refreshDms = useCallback(() => {
+    if (!token) return Promise.resolve();
+    return api("/api/dms", { token }).then(setDms).catch(console.error);
+  }, [token]);
+  const refreshRelations = useCallback(() => {
+    if (!token) return Promise.resolve();
+    return api("/api/relations", { token }).then(setRelations).catch(console.error);
+  }, [token]);
+  const refreshOpenProfile = useCallback(() => {
+    const id = profileIdRef.current;
+    if (!id || !token) return;
+    api(`/api/people/${id}`, { token })
+      .then((p) => { if (profileIdRef.current === id) setProfile(p); }) // se nel frattempo l'ho chiuso, non riaprirlo
+      .catch(() => { if (profileIdRef.current === id) setProfile(null); }); // es. mi ha bloccato: sparisce
+  }, [token]);
+
+  relationsRef.current = relations;
+  dmsRef.current = dms;
+  meIdRef.current = me?.id || null;
+  profileIdRef.current = profile?.id || null;
+  refreshRef.current = { people: refreshPeople, dms: refreshDms, relations: refreshRelations, profile: refreshOpenProfile };
+
+  /* persone + DM + relazioni quando loggato */
   useEffect(() => {
-    if (isGuest) { setPeople([]); setDms([]); return; }
-    api("/api/people", { token }).then(setPeople).catch(console.error);
-    api("/api/dms", { token }).then(setDms).catch(console.error);
-  }, [isGuest, token]);
+    if (isGuest) { setPeople([]); setDms([]); setRelations(EMPTY_RELATIONS); return; }
+    refreshPeople(); refreshDms(); refreshRelations();
+  }, [isGuest, token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* aprendo "Persone" il feed si ricarica sempre: niente più pagina da aggiornare a mano */
+  useEffect(() => {
+    if (tab === "people" && !isGuest) refreshPeople();
+  }, [tab, isGuest, refreshPeople]);
+
+  /* se cambiano i miei amici/bloccati mentre un profilo è aperto, lo aggiorno
+     (es. mi accettano l'amicizia → compaiono le foto "solo amici") */
+  const relKey = relations.friends.map((u) => u.id).join(",") + "|" + relations.blocked.map((u) => u.id).join(",");
+  useEffect(() => { refreshOpenProfile(); }, [relKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* socket: (ri)connessione al cambio di auth */
   useEffect(() => {
     const s = connectSocket(token);
     socketRef.current = s;
+    let tPeople = null, tRel = null;
+
     s.on("message", (msg) => {
-      if (msg.room_id === activeIdRef.current) setMessages((m) => [...m, msg]);
+      const isDmMsg = typeof msg.room_id === "string" && msg.room_id.startsWith("dm-");
+      if (msg.room_id === activeIdRef.current) {
+        setMessages((m) => [...m, msg]);
+      } else if (isDmMsg && msg.user_id !== meIdRef.current) {
+        /* qualcuno mi scrive mentre guardo altro: la DM compare in lista con la sua icona */
+        if (!dmsRef.current.some((d) => d.id === msg.room_id)) refreshRef.current.dms?.();
+        const isMuted = relationsRef.current.muted.some((u) => u.id === msg.user_id);
+        if (!isMuted) setUnread((u) => new Set(u).add(msg.room_id));
+      }
+    });
+    /* un profilo è cambiato (privato, foto "solo amici", avatar…): ricarico feed e profilo aperto */
+    s.on("people-changed", () => {
+      clearTimeout(tPeople);
+      tPeople = setTimeout(() => { refreshRef.current.people?.(); refreshRef.current.profile?.(); }, 300);
+    });
+    /* richiesta/accettazione/blocco: ricarico relazioni e DM */
+    s.on("relations-changed", () => {
+      clearTimeout(tRel);
+      tRel = setTimeout(() => { refreshRef.current.relations?.(); refreshRef.current.dms?.(); }, 200);
     });
     s.on("errorMsg", (e) => { console.warn("socket:", e); setToast(e); });
     s.on("connect_error", (e) => { console.warn("socket connect_error:", e.message); setToast(`Connessione al server fallita: ${e.message}`); });
-    return () => s.disconnect();
+    return () => { clearTimeout(tPeople); clearTimeout(tRel); s.disconnect(); };
   }, [token]);
 
   /* cambio stanza: carica cronologia + join socket */
   useEffect(() => {
     activeIdRef.current = activeId;
     if (!activeId) return;
+    setUnread((u) => { if (!u.has(activeId)) return u; const n = new Set(u); n.delete(activeId); return n; });
     setMessages([]);
     const isDm = activeId.startsWith("dm-");
     const path = isDm ? `/api/dms/${activeId}/messages` : `/api/rooms/${activeId}/messages`;
@@ -1110,8 +1482,9 @@ export default function App() {
   const openProfileById = async (userId) => {
     if (isGuest) return requireAuth("Registrati per vedere i profili.");
     if (userId === me?.id) return setMyProfileOpen(true);
+    if (String(userId).startsWith("guest-")) return; // i guest non hanno un profilo
     try { setProfile(await api(`/api/people/${userId}`, { token })); }
-    catch (e) { console.error(e); }
+    catch (e) { setToast(e.message || "Profilo non disponibile"); }
   };
 
   const openDm = async (user, promptQ) => {
@@ -1119,7 +1492,10 @@ export default function App() {
     try {
       const dm = await api(`/api/dms/${user.id}`, { method: "POST", token });
       const list = await api("/api/dms", { token });
-      setDms(list);
+      /* una DM vuota aperta da altri non è in lista: la aggiungo io per poterla usare */
+      setDms(list.some((d) => d.id === dm.id)
+        ? list
+        : [...list, { ...dm, other: { id: user.id, name: user.name, handle: user.handle, avatar: user.avatar } }]);
       setTab("rooms");
       setActiveId(dm.id);
       if (promptQ) {
@@ -1128,8 +1504,43 @@ export default function App() {
           socketRef.current?.emit("message", { roomId: dm.id, text: `(rispondo al tuo prompt: "${promptQ}")` });
         }, 400);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) { setToast(e.message); }
   };
+
+  /* azioni su un utente: amicizia, blocco, silenzia */
+  const relCall = useCallback(async (method, path, okMsg) => {
+    try {
+      await api(path, { method, token });
+      await Promise.all([refreshRelations(), refreshPeople(), refreshDms()]);
+      if (okMsg) setToast(okMsg);
+    } catch (e) { setToast(e.message); }
+  }, [token, refreshRelations, refreshPeople, refreshDms]);
+
+  const relActions = {
+    addFriend: (id) => relCall("POST", `/api/friends/${id}`, "Richiesta di amicizia inviata"),
+    accept: (id) => relCall("POST", `/api/friends/${id}/accept`, "Ora siete amici"),
+    decline: (id) => relCall("DELETE", `/api/friends/${id}`),   // rifiuta / annulla / elimina amico
+    block: async (id) => {
+      await relCall("POST", `/api/blocks/${id}`, "Utente bloccato");
+      /* se stavo chattando con lui, torno alla prima stanza */
+      setActiveId((cur) => (dmsRef.current.find((d) => d.id === cur)?.other?.id === id ? (rooms[0]?.id || null) : cur));
+    },
+    unblock: (id) => relCall("DELETE", `/api/blocks/${id}`, "Utente sbloccato"),
+    mute: (id) => relCall("POST", `/api/mutes/${id}`, "Utente silenziato"),
+    unmute: (id) => relCall("DELETE", `/api/mutes/${id}`, "Notifiche riattivate"),
+    openProfile: (id) => openProfileById(id),
+    openActions: (u) => setActionTarget(u),
+  };
+
+  /* bloccati e silenziati: i loro messaggi nelle stanze non si vedono; le DM dei bloccati spariscono */
+  const blockedIds = useMemo(() => new Set(relations.blocked.map((u) => u.id)), [relations]);
+  const mutedIds = useMemo(() => new Set(relations.muted.map((u) => u.id)), [relations]);
+  const isDmActive = !!activeId?.startsWith("dm-");
+  const visibleMessages = isDmActive
+    ? messages
+    : messages.filter((m) => !blockedIds.has(m.user_id) && !mutedIds.has(m.user_id));
+  const visibleDms = dms.filter((d) => !blockedIds.has(d.other?.id));
+  const dmOther = isDmActive ? dms.find((d) => d.id === activeId)?.other : null;
 
   const onAuthed = (tkn, user) => {
     localStorage.setItem("foyer_token", tkn);
@@ -1141,6 +1552,7 @@ export default function App() {
   const logout = () => {
     localStorage.removeItem("foyer_token");
     setToken(null); setMe(null); setDms([]); setPeople([]);
+    setRelations(EMPTY_RELATIONS); setUnread(new Set()); setActionTarget(null); setProfile(null);
   };
 
   const activeRoom =
@@ -1188,8 +1600,12 @@ export default function App() {
           ) : (
             <>
               <button onClick={() => setMyProfileOpen(true)} aria-label="Apri il mio profilo"
-                className="rounded-full focus:outline-none focus:ring-2 focus:ring-white hover:opacity-90 transition-opacity shrink-0">
+                className="relative rounded-full focus:outline-none focus:ring-2 focus:ring-white hover:opacity-90 transition-opacity shrink-0">
                 <Avatar src={me.avatar} name={me.name} size={32} ring />
+                {relations.incoming.length > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white" style={{ background: "#FF4D8D" }}
+                    title={`${relations.incoming.length} richieste di amicizia`} />
+                )}
               </button>
               <button onClick={logout} className="hidden sm:inline font-mono2 text-[11px] text-white/70 hover:text-white shrink-0" title="Esci">esci</button>
             </>
@@ -1201,20 +1617,23 @@ export default function App() {
         {tab === "rooms" && (
           <>
             <aside className="hidden md:block w-72 shrink-0 overflow-y-auto no-scrollbar p-4" style={{ background: "#14121F" }}>
-              <RoomsRail rooms={rooms} dms={dms} activeId={activeId} onPick={setActiveId} />
+              <RoomsRail rooms={rooms} dms={visibleDms} activeId={activeId} onPick={setActiveId}
+                unread={unread} mutedIds={mutedIds} onAvatar={setActionTarget} />
             </aside>
             {mobileRailOpen && (
               <div className="md:hidden absolute inset-0 z-40 flex">
                 <div className="w-72 max-w-[80%] h-full overflow-y-auto no-scrollbar p-4 fade-up" style={{ background: "#14121F" }}>
-                  <RoomsRail rooms={rooms} dms={dms} activeId={activeId}
-                    onPick={(id) => { setActiveId(id); setMobileRailOpen(false); }} />
+                  <RoomsRail rooms={rooms} dms={visibleDms} activeId={activeId}
+                    onPick={(id) => { setActiveId(id); setMobileRailOpen(false); }}
+                    unread={unread} mutedIds={mutedIds} onAvatar={(u) => { setMobileRailOpen(false); setActionTarget(u); }} />
                 </div>
                 <div className="flex-1 bg-black/50" onClick={() => setMobileRailOpen(false)} />
               </div>
             )}
             <main className="flex-1 min-w-0">
-              <ChatView room={activeRoom} meId={me?.id} isGuest={isGuest} messages={messages}
-                onSend={handleSend} onOpenProfile={openProfileById} requireAuth={requireAuth} />
+              <ChatView room={activeRoom} meId={me?.id} isGuest={isGuest} messages={visibleMessages}
+                onSend={handleSend} onOpenProfile={openProfileById} requireAuth={requireAuth}
+                dmOther={dmOther} onOpenActions={setActionTarget} />
             </main>
           </>
         )}
@@ -1241,9 +1660,14 @@ export default function App() {
         )}
       </div>
 
-      <ProfileSheet user={profile} token={token} onClose={() => setProfile(null)} onMessage={openDm} />
+      <ProfileSheet user={profile} token={token} onClose={() => setProfile(null)} onMessage={openDm}
+        relations={relations} actions={relActions} onOpenActions={setActionTarget} />
       <MyProfileSheet open={myProfileOpen} me={me} token={token} onClose={() => setMyProfileOpen(false)}
-        onUpdate={(fn) => setMe((m) => (m ? fn(m) : m))} />
+        onUpdate={(fn) => setMe((m) => (m ? fn(m) : m))}
+        relations={relations}
+        relActions={{ ...relActions, openProfile: (id) => { setMyProfileOpen(false); openProfileById(id); } }} />
+      <UserActionSheet target={actionTarget} relations={relations} actions={relActions}
+        onClose={() => setActionTarget(null)} hideViewProfile={!!profile && profile.id === actionTarget?.id} />
       <AuthModal open={auth.open} reason={auth.reason} onClose={() => setAuth({ open: false, reason: "" })} onAuthed={onAuthed} />
 
       {toast && (
