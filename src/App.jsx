@@ -84,6 +84,37 @@ function compressImage(file, maxSide = 900, quality = 0.75) {
   });
 }
 
+/* Ogni foto caricata viene preparata qui, nel browser, in tre versioni:
+   grande (max 1280px), miniatura per la griglia (480px) e una sfocata minuscola
+   (20px). La sfocata è un file a parte: è l'unica che il server manda agli altri
+   quando la foto è nascosta, quindi l'originale non si può recuperare da fuori. */
+function loadImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
+}
+function drawToBlob(img, maxSide, quality) {
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(img.width * scale));
+  canvas.height = Math.max(1, Math.round(img.height * scale));
+  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+}
+async function makePhotoVariants(file) {
+  const img = await loadImageFile(file);
+  const [full, thumb, blur] = await Promise.all([
+    drawToBlob(img, 1280, 0.82),
+    drawToBlob(img, 480, 0.75),
+    drawToBlob(img, 20, 0.5),
+  ]);
+  return { full, thumb, blur };
+}
+
 /* ———— blocchi base ———— */
 function Avatar({ src, name = "", size = 40, ring = false, online = false }) {
   return (
@@ -146,10 +177,28 @@ function HeartIcon({ filled, size = 18 }) {
   );
 }
 
-function XIcon({ size = 20 }) {
+const ROSE_COST_LABEL = "1,99";
+
+function SendIcon({ size = 16 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/>
+    </svg>
+  );
+}
+
+function ClockIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+    </svg>
+  );
+}
+
+function ShieldCheckIcon({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/>
     </svg>
   );
 }
@@ -505,7 +554,94 @@ function AuthModal({ open, reason, onClose, onAuthed }) {
 }
 
 /* ———— foglio profilo altrui ———— */
-function ProfileSheet({ user, token, onClose, onMessage, relations, actions, onOpenActions }) {
+/* una foto: nitida, oppure — se il titolare l'ha nascosta — la versione sfocata
+   (un file diverso, non un filtro sopra l'originale) con un lucchetto */
+function PhotoView({ photo, className = "", thumb = false }) {
+  if (photo.hidden) {
+    return (
+      <div className={`relative overflow-hidden bg-neutral-300 ${className}`}>
+        {photo.blur
+          ? <img src={assetUrl(photo.blur)} alt="" className="w-full h-full object-cover" style={{ filter: "blur(6px)", transform: "scale(1.15)" }} />
+          : <div className="w-full h-full" style={{ background: GRAD }} />}
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/25 text-white">
+          <LockIcon size={22} />
+          <span className="font-body text-[11px] font-bold">Solo amici</span>
+        </div>
+      </div>
+    );
+  }
+  return <img src={assetUrl(thumb ? (photo.thumb || photo.url) : photo.url)} alt="" loading="lazy" decoding="async" className={className} />;
+}
+
+/* foto scorrevoli: tocco a sinistra/destra, barra a tacche in stile storie */
+function PhotoCarousel({ photos, className = "", children }) {
+  const list = photos || [];
+  const [idx, setIdx] = useState(0);
+  useEffect(() => { setIdx(0); }, [list.length]);
+  const cur = list[Math.min(idx, Math.max(list.length - 1, 0))];
+  const go = (d) => setIdx((i) => Math.min(Math.max(i + d, 0), list.length - 1));
+  return (
+    <div className={`relative overflow-hidden ${className}`}>
+      {cur
+        ? <PhotoView photo={cur} className="absolute inset-0 w-full h-full object-cover" />
+        : <div className="absolute inset-0" style={{ background: GRAD }} />}
+      {list.length > 1 && (
+        <>
+          <button onClick={() => go(-1)} aria-label="Foto precedente" className="absolute left-0 top-0 bottom-0 w-[42%] z-10 focus:outline-none" />
+          <button onClick={() => go(1)} aria-label="Foto successiva" className="absolute right-0 top-0 bottom-0 w-[42%] z-10 focus:outline-none" />
+        </>
+      )}
+      {children}
+      {list.length > 1 && (
+        <div className="absolute top-3 left-4 right-24 flex gap-1 pointer-events-none">
+          {list.map((_, i) => (
+            <div key={i} className="flex-1 h-1 rounded-full bg-white/35 overflow-hidden">
+              <div className="h-full bg-white transition-all" style={{ width: i <= idx ? "100%" : "0%" }} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* come posso contattare questa persona? Lo stato arriva dal server (user.contact):
+   open | request | rose | pending | incoming | closed | self */
+function ContactControl({ user, onContact, onRose }) {
+  const c = user.contact;
+  if (!c || c === "self") return null;
+  if (c === "open") return <BtnPrimary onClick={() => onContact(user)} className="w-full py-3.5 text-base">Scrivi a {user.name}</BtnPrimary>;
+  if (c === "incoming") return <BtnPrimary onClick={() => onContact(user)} className="w-full py-3.5 text-base">Accetta la richiesta di messaggio</BtnPrimary>;
+  if (c === "pending") {
+    return (
+      <div className="w-full py-3.5 rounded-2xl text-center text-sm font-bold border border-neutral-200 text-neutral-500 flex items-center justify-center gap-2">
+        <ClockIcon size={16} /> Richiesta inviata
+      </div>
+    );
+  }
+  if (c === "request") {
+    return (
+      <div className="space-y-2">
+        <BtnPrimary onClick={() => onContact(user)} className="w-full py-3.5 text-base">Chiedi di scrivere</BtnPrimary>
+        <button onClick={() => onRose(user)} className={`w-full py-3 ${outlineBtn}`}>🌹 Invia una rosa · {ROSE_COST_LABEL}</button>
+      </div>
+    );
+  }
+  if (c === "rose") {
+    return (
+      <div className="space-y-2">
+        <BtnPrimary onClick={() => onRose(user)} className="w-full py-3.5 text-base">🌹 Invia una rosa per scrivere · {ROSE_COST_LABEL}</BtnPrimary>
+        <p className="font-body text-[12px] text-neutral-400 text-center">@{user.handle} accetta messaggi solo da chi invia una rosa. Decide comunque lei/lui.</p>
+      </div>
+    );
+  }
+  if (c === "closed" && !user.unverified) {
+    return <p className="font-body text-[13px] text-neutral-400 text-center">Non è possibile scrivere a questa persona.</p>;
+  }
+  return null;
+}
+
+function ProfileSheet({ user, token, onClose, onMessage, onRose, relations, actions, onOpenActions }) {
   const [likes, setLikes] = useState({}); // idx -> {liked, count}
 
   useEffect(() => {
@@ -539,15 +675,26 @@ function ProfileSheet({ user, token, onClose, onMessage, relations, actions, onO
           <div className="font-display text-2xl font-extrabold text-neutral-900 flex items-center justify-center gap-2">
             @{user.handle}, {user.age} <GenderChip gender={user.gender} />
           </div>
-          <p className="font-body text-neutral-500 mt-2">Questo profilo è privato. Diventa amico per vederlo.</p>
-          <div className="mt-5 text-left"><FriendControl userId={user.id} relations={relations} actions={actions} /></div>
+          {user.age_verified && (
+            <span className="font-mono2 text-[11px] px-2.5 py-1 rounded-full bg-green-50 border border-green-200 text-green-700 inline-flex items-center gap-1.5 mt-2">
+              <ShieldCheckIcon size={12} /> età verificata
+            </span>
+          )}
+          <p className="font-body text-neutral-500 mt-2">
+            {user.unverified
+              ? "Questo profilo non ha ancora verificato l'età, quindi non è visibile."
+              : "Questo profilo è privato. Diventa amico per vederlo."}
+          </p>
+          {!user.unverified && (
+            <div className="mt-5 text-left space-y-2.5">
+              <FriendControl userId={user.id} relations={relations} actions={actions} />
+              <ContactControl user={user} onContact={onMessage} onRose={onRose} />
+            </div>
+          )}
         </div>
       </div>
     );
   }
-
-  /* nessuna foto di riempimento casuale: senza foto visibili si mostra il gradiente del sito */
-  const hero = user.photos?.[0] ? assetUrl(user.photos[0].url) : null;
 
   const toggleLike = async (idx) => {
     try {
@@ -569,12 +716,9 @@ function ProfileSheet({ user, token, onClose, onMessage, relations, actions, onO
             className="w-10 h-10 rounded-full bg-black/50 text-white backdrop-blur flex items-center justify-center hover:bg-black/70 shadow-lg focus:outline-none focus:ring-2 focus:ring-white">✕</button>
         </div>
 
-        <div className="relative h-72">
-          {hero
-            ? <img src={hero} alt="" className="w-full h-full object-cover" />
-            : <div className="w-full h-full" style={{ background: GRAD }} />}
-          <div className="absolute inset-0" style={{ background: "linear-gradient(180deg,transparent 40%,rgba(0,0,0,.65))" }} />
-          <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between">
+        <PhotoCarousel photos={user.photos} className="h-72">
+          <div className="absolute inset-0 pointer-events-none" style={{ background: "linear-gradient(180deg,transparent 40%,rgba(0,0,0,.65))" }} />
+          <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between pointer-events-none">
             <div>
               <div className="font-display text-white text-3xl font-bold leading-none flex items-center gap-2">
                 {user.name}, {user.age} <GenderChip gender={user.gender} />
@@ -583,12 +727,17 @@ function ProfileSheet({ user, token, onClose, onMessage, relations, actions, onO
             </div>
             <Avatar src={user.avatar} name={user.name} size={52} ring />
           </div>
-        </div>
+        </PhotoCarousel>
 
         <div className="p-5 space-y-5 font-body">
           <div className="flex flex-wrap gap-2 items-center">
             <Badge>✉️ email verificata</Badge>
             {user.streak > 1 && <Badge>🔥 streak {user.streak}</Badge>}
+            {user.age_verified && (
+              <span className="font-mono2 text-[11px] px-2.5 py-1 rounded-full bg-green-50 border border-green-200 text-green-700 flex items-center gap-1.5">
+                <ShieldCheckIcon size={12} /> età verificata
+              </span>
+            )}
             <span className="font-mono2 text-[11px] px-2.5 py-1 rounded-full bg-neutral-100 border border-neutral-200 text-neutral-700 flex items-center gap-1.5">
               <UsersIcon size={12} /> {user.friend_count ?? 0} amici
             </span>
@@ -633,12 +782,7 @@ function ProfileSheet({ user, token, onClose, onMessage, relations, actions, onO
               <div className="grid grid-cols-3 gap-1.5 rounded-2xl overflow-hidden">
                 {user.photos.map((p) => (
                   <div key={p.id} className="relative aspect-square">
-                    <img src={assetUrl(p.url)} alt="" className="w-full h-full object-cover hover:opacity-90 transition-opacity" />
-                    {p.friends_only && (
-                      <span title="Visibile solo agli amici" className="absolute top-1.5 left-1.5 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center">
-                        <UsersIcon size={12} />
-                      </span>
-                    )}
+                    <PhotoView photo={p} thumb className="w-full h-full object-cover hover:opacity-90 transition-opacity" />
                   </div>
                 ))}
               </div>
@@ -646,9 +790,7 @@ function ProfileSheet({ user, token, onClose, onMessage, relations, actions, onO
           )}
 
           <FriendControl userId={user.id} relations={relations} actions={actions} />
-          <BtnPrimary onClick={() => onMessage(user, null)} className="w-full py-3.5 text-base">
-            Scrivi a {user.name}
-          </BtnPrimary>
+          <ContactControl user={user} onContact={onMessage} onRose={onRose} />
           <div className="h-2" />
         </div>
       </div>
@@ -764,6 +906,23 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
   const [avatarHover, setAvatarHover] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarDragOver, setAvatarDragOver] = useState(false);
+  const [ageBusy, setAgeBusy] = useState(false);
+  const [ageConfigured, setAgeConfigured] = useState(true); // true finché non sappiamo il contrario, evita un lampo "non disponibile"
+
+  useEffect(() => {
+    if (!open || !token) return;
+    api("/api/verify-age/status", { token }).then((s) => setAgeConfigured(s.configured)).catch(() => {});
+  }, [open, token]);
+
+  const startAgeVerify = async () => {
+    setAgeBusy(true); setErr("");
+    try {
+      const r = await api("/api/verify-age/start", { method: "POST", token });
+      if (r.already) onUpdate((m) => ({ ...m, age_verified: true }));
+      else if (r.url) window.open(r.url, "_blank", "noopener");
+    } catch (e) { setErr(e.message); }
+    setAgeBusy(false);
+  };
   const [editingPrompts, setEditingPrompts] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -794,11 +953,14 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
     setBusy(true); setErr("");
     for (const f of files) {
       try {
+        const v = await makePhotoVariants(f);
         const fd = new FormData();
-        fd.append("photo", f);
+        fd.append("photo", v.full, "photo.jpg");
+        fd.append("thumb", v.thumb, "thumb.jpg");
+        fd.append("blur", v.blur, "blur.jpg");
         const saved = await api("/api/me/photos", { method: "POST", token, body: fd, formData: true });
         onUpdate((m) => ({ ...m, photos: [...(m.photos || []), saved] }));
-      } catch (er) { setErr(er.message); }
+      } catch (er) { setErr(er.message || "Non riesco a leggere questa immagine"); }
     }
     setBusy(false);
   };
@@ -810,8 +972,8 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
     } catch (er) { setErr(er.message); }
   };
 
-  /* "Solo amici": se acceso, la foto la vedono solo i miei amici accettati
-     (il server non la manda a nessun altro: né profilo né swipe di Persone) */
+  /* "Sfocata": se accesa, ai non amici il server manda solo la versione sfocata di
+     questa foto (profilo e griglia); nitida resta solo per me e per i miei amici */
   const toggleFriendsOnly = async (photo) => {
     const next = !photo.friends_only;
     const setFlag = (val) => onUpdate((m) => ({ ...m, photos: (m.photos || []).map((p) => (p.id === photo.id ? { ...p, friends_only: val } : p)) }));
@@ -820,6 +982,18 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
       await api(`/api/me/photos/${photo.id}`, { method: "PATCH", token, body: { friends_only: next } });
     } catch (er) {
       setFlag(!next); // rollback se la chiamata fallisce
+      setErr(er.message);
+    }
+  };
+
+  /* "DM privati": chi vuole scriverti deve inviare una rosa (tu accetti o rifiuti sempre) */
+  const toggleDmPrivate = async () => {
+    const next = !me.dm_private;
+    onUpdate((m) => ({ ...m, dm_private: next }));
+    try {
+      await api("/api/me", { method: "PATCH", token, body: { dm_private: next } });
+    } catch (er) {
+      onUpdate((m) => ({ ...m, dm_private: !next }));
       setErr(er.message);
     }
   };
@@ -839,8 +1013,10 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
     if (!file || !file.type?.startsWith("image/")) return;
     setAvatarBusy(true); setErr("");
     try {
+      const img = await loadImageFile(file);
+      const small = await drawToBlob(img, 512, 0.85);
       const fd = new FormData();
-      fd.append("avatar", file);
+      fd.append("avatar", small, "avatar.jpg");
       const res = await api("/api/me/avatar", { method: "POST", token, body: fd, formData: true });
       onUpdate((m) => ({ ...m, avatar: res.avatar }));
     } catch (er) { setErr(er.message); }
@@ -1004,17 +1180,17 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
             <div className="grid grid-cols-3 gap-1.5">
               {photos.map((p, idx) => (
                 <div key={p.id} className="relative aspect-square rounded-xl overflow-hidden">
-                  <img src={assetUrl(p.url)} alt={`foto ${idx + 1}`} className="w-full h-full object-cover" />
+                  <img src={assetUrl(p.thumb || p.url)} alt={`foto ${idx + 1}`} className="w-full h-full object-cover" />
                   <button onClick={() => removePhoto(p)} aria-label={`Elimina foto ${idx + 1}`}
                     className="absolute top-1.5 right-1.5 w-7 h-7 rounded-full bg-black/60 text-white text-xs flex items-center justify-center hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-white">🗑</button>
                   {idx === 0 && <span className="absolute top-1.5 left-1.5 font-mono2 text-[9px] text-white bg-black/60 rounded px-1.5 py-0.5">principale</span>}
                   <button
                     onClick={() => toggleFriendsOnly(p)}
                     aria-pressed={!!p.friends_only}
-                    aria-label={p.friends_only ? "Foto visibile solo agli amici: tocca per renderla pubblica" : "Foto pubblica: tocca per renderla visibile solo agli amici"}
-                    title="Solo amici"
+                    aria-label={p.friends_only ? "Foto sfocata per gli altri: tocca per mostrarla nitida a tutti" : "Foto visibile a tutti: tocca per sfocarla agli altri"}
+                    title="Sfocata per chi non è tuo amico"
                     className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-1 px-1.5 py-1.5 bg-black/60 backdrop-blur-sm text-white focus:outline-none focus:ring-2 focus:ring-white">
-                    <span className="font-body font-semibold text-[10px] leading-none whitespace-nowrap">Solo amici</span>
+                    <span className="font-body font-semibold text-[10px] leading-none whitespace-nowrap">Sfocata</span>
                     <span className="w-7 h-4 rounded-full flex items-center px-0.5 shrink-0 transition-colors"
                       style={{ background: p.friends_only ? BTN_TXT : "rgba(255,255,255,0.35)" }}>
                       <span className="w-3 h-3 rounded-full shadow transition-transform"
@@ -1032,7 +1208,7 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
               )}
             </div>
             <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={addPhotos} />
-            <p className="font-body text-[12px] text-neutral-400 mt-2">La prima foto è quella principale. Massimo 6 foto, 5MB l'una. Con "Solo amici" acceso la foto la vedono solo i tuoi amici: a tutti gli altri non compare né aprendo il tuo profilo né nello swipe di Persone.</p>
+            <p className="font-body text-[12px] text-neutral-400 mt-2">La prima foto è quella principale; massimo 6. Le foto si vedono a tutti: accendi "Sfocata" solo su quelle che non vuoi mostrare. Chi non è tuo amico ne vede una versione sfocata con un lucchetto (per far venire curiosità), nitida solo per te e per i tuoi amici.</p>
           </div>
 
           {err && <div className="text-sm text-pink-600 font-medium">{err}</div>}
@@ -1063,6 +1239,55 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
                 style={{ transform: me.private ? "translateX(20px)" : "translateX(0)", background: me.private ? BTN_TXT : "white" }} />
             </span>
           </button>
+
+          {/* messaggi: aperti a tutti i verificati, o solo con una rosa */}
+          <button
+            onClick={toggleDmPrivate} aria-pressed={!!me.dm_private}
+            className="w-full flex items-center justify-between gap-4 rounded-2xl border border-neutral-200 p-4 bg-neutral-50 text-left focus:outline-none focus:ring-2 focus:ring-pink-400">
+            <span className="flex items-center gap-3">
+              <span className="shrink-0" style={{ color: me.dm_private ? "#FF4D8D" : "#a3a3a3" }}>
+                <SendIcon size={20} />
+              </span>
+              <span>
+                <span className="block font-display font-bold text-neutral-900">DM privati</span>
+                <span className="block font-body text-[13px] text-neutral-500">
+                  {me.dm_private
+                    ? "Per scriverti serve una rosa. Tu accetti o rifiuti sempre."
+                    : "Chiunque sia verificato può chiederti di scrivere. Tu accetti o rifiuti."}
+                </span>
+              </span>
+            </span>
+            <span className="shrink-0 w-12 h-7 rounded-full flex items-center px-1 transition-colors"
+              style={{ background: me.dm_private ? BTN_BG : "#e5e5e5" }}>
+              <span className="w-5 h-5 rounded-full bg-white shadow transition-transform"
+                style={{ transform: me.dm_private ? "translateX(20px)" : "translateX(0)", background: me.dm_private ? BTN_TXT : "white" }} />
+            </span>
+          </button>
+
+          <div className="rounded-2xl border border-neutral-200 p-4 bg-neutral-50 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="shrink-0" style={{ color: me.age_verified ? "#16A34A" : "#a3a3a3" }}>
+                <ShieldCheckIcon size={22} />
+              </span>
+              <div className="min-w-0">
+                <div className="font-display font-bold text-neutral-900">
+                  {me.age_verified ? "Età verificata" : "Verifica la tua età"}
+                </div>
+                <div className="font-body text-[13px] text-neutral-500">
+                  {me.age_verified
+                    ? "Il tuo profilo mostra il badge agli altri."
+                    : ageConfigured
+                    ? "Facoltativo per ora — rende il profilo più affidabile."
+                    : "Non ancora disponibile su questo sito."}
+                </div>
+              </div>
+            </div>
+            {!me.age_verified && ageConfigured && (
+              <BtnPrimary onClick={startAgeVerify} disabled={ageBusy} className="px-4 py-2.5 text-sm shrink-0 disabled:opacity-50">
+                {ageBusy ? "…" : "Verifica"}
+              </BtnPrimary>
+            )}
+          </div>
 
           <div className="rounded-xl bg-neutral-50 border border-neutral-200 px-3.5 py-2.5 font-mono2 text-[11px] text-neutral-500">
             ✉️ {me.email} · account verificato
@@ -1115,7 +1340,7 @@ function MessageRow({ msg, mine, onOpenProfile }) {
   );
 }
 
-function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requireAuth, dmOther, onOpenActions }) {
+function ChatView({ room, meId, isGuest, gateBlocked, onVerify, messages, onSend, onOpenProfile, requireAuth, dmOther, onOpenActions }) {
   const [text, setText] = useState("");
   const [pendingImg, setPendingImg] = useState(null);
   const fileRef = useRef(null);
@@ -1125,8 +1350,11 @@ function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requir
 
   if (!room) return null;
   const isDm = room.id.startsWith("dm-");
-  const canWrite = !isGuest || room.access === "open";
-  const canView = !isGuest || room.access !== "members";
+  /* i guest leggono soltanto; scrivere richiede un account; la stanza rosa e i
+     messaggi privati richiedono anche la verifica dell'età (quando è attiva) */
+  const needsVerify = gateBlocked && (isDm || room.access === "members");
+  const canWrite = !isGuest && !needsVerify;
+  const canView = !(room.access === "members" && (isGuest || gateBlocked));
 
   if (!canView) {
     return (
@@ -1136,10 +1364,16 @@ function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requir
             <LockIcon size={26} />
           </div>
           <div className="font-display text-2xl font-extrabold text-neutral-900">La stanza rosa è riservata</div>
-          <p className="font-body text-neutral-500 mt-2">Qui entrano solo profili registrati e verificati.</p>
-          <BtnPrimary onClick={() => requireAuth("La stanza rosa è riservata ai profili registrati.")} className="mt-5 px-8 py-3.5">
-            Crea il profilo ed entra
-          </BtnPrimary>
+          <p className="font-body text-neutral-500 mt-2">
+            {isGuest ? "Qui entrano solo profili registrati e con l'età verificata." : "Per entrare devi prima verificare la tua età."}
+          </p>
+          {isGuest ? (
+            <BtnPrimary onClick={() => requireAuth("La stanza rosa è riservata ai profili registrati.")} className="mt-5 px-8 py-3.5">
+              Crea il profilo ed entra
+            </BtnPrimary>
+          ) : (
+            <BtnPrimary onClick={onVerify} className="mt-5 px-8 py-3.5">Verifica la tua età</BtnPrimary>
+          )}
         </div>
       </div>
     );
@@ -1206,7 +1440,7 @@ function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requir
             </div>
           )}
           <div className="flex items-end gap-2">
-            <button onClick={() => (isGuest ? requireAuth("Registrati per inviare immagini.") : fileRef.current?.click())}
+            <button onClick={() => fileRef.current?.click()}
               aria-label="Allega un'immagine" title="Allega immagine"
               className="w-11 h-11 shrink-0 rounded-2xl border border-neutral-200 flex items-center justify-center text-neutral-500 hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-violet-400">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
@@ -1214,10 +1448,10 @@ function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requir
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pickImage} />
             <textarea value={text} onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
-              placeholder={isGuest ? "Scrivi nel salotto (sei guest)" : `Scrivi ${isDm ? `a ${room.name}` : `in #${room.name}`}`}
+              placeholder={`Scrivi ${isDm ? `a ${room.name}` : `in #${room.name}`}`}
               rows={1}
               className="flex-1 resize-none rounded-2xl border border-neutral-200 px-4 py-3 font-body text-[15px] outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent max-h-32" />
-            <button onClick={() => (isGuest && room.access !== "open" ? requireAuth("Registrati per scrivere.") : submit())}
+            <button onClick={submit}
               aria-label="Invia messaggio"
               className="w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-violet-400"
               style={{ background: BTN_BG, color: BTN_TXT }}>
@@ -1228,19 +1462,52 @@ function ChatView({ room, meId, isGuest, messages, onSend, onOpenProfile, requir
       ) : (
         <div className="border-t border-neutral-200 bg-white p-4 flex items-center justify-between gap-3">
           <div className="font-body text-sm text-neutral-500 flex items-center gap-2">
-            <EyeIcon /> Stai ascoltando come guest. Registrati per unirti alla conversazione.
+            <EyeIcon /> {isGuest ? "Stai leggendo come guest. Registrati per scrivere." : "Per scrivere qui devi prima verificare la tua età."}
           </div>
-          <BtnPrimary onClick={() => requireAuth("Registrati per scrivere nella stanza romantic.")} className="shrink-0 px-5 py-2.5 rounded-xl text-sm">
-            Registrati
-          </BtnPrimary>
+          {isGuest ? (
+            <BtnPrimary onClick={() => requireAuth("Registrati per scrivere nelle stanze.")} className="shrink-0 px-5 py-2.5 rounded-xl text-sm">
+              Registrati
+            </BtnPrimary>
+          ) : (
+            <BtnPrimary onClick={onVerify} className="shrink-0 px-5 py-2.5 rounded-xl text-sm">Verifica l'età</BtnPrimary>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+/* richieste di messaggio ricevute (le rose in cima), con Accetta / Rifiuta.
+   Chi rifiuta non viene avvisato. */
+function RequestsList({ requests, onAccept, onDecline, isOnline }) {
+  if (!requests || requests.length === 0) return null;
+  return (
+    <div>
+      <div className="font-mono2 text-[10px] uppercase tracking-[0.2em] text-white/40 px-1 mb-2">richieste di messaggio · {requests.length}</div>
+      <div className="space-y-1.5">
+        {requests.map((r) => (
+          <div key={r.from.id} className="flex items-center gap-2 rounded-xl p-1.5" style={{ background: r.rose ? "rgba(255,77,141,0.16)" : "transparent" }}>
+            <Avatar src={r.from.avatar} name={r.from.name} size={34} online={isOnline?.(r.from.id)} />
+            <div className="min-w-0 flex-1">
+              <div className="font-body font-semibold text-[13px] text-white/90 truncate">@{r.from.handle}</div>
+              {r.rose && <div className="font-mono2 text-[10px]" style={{ color: "#FF9AC4" }}>🌹 ti ha inviato una rosa</div>}
+            </div>
+            <button onClick={() => onAccept(r.from)} aria-label={`Accetta la richiesta di ${r.from.handle}`} title="Accetta"
+              className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 focus:outline-none focus:ring-2 focus:ring-white"
+              style={{ background: BTN_BG, color: BTN_TXT }}>
+              <CheckIcon size={15} />
+            </button>
+            <button onClick={() => onDecline(r.from)} aria-label={`Rifiuta la richiesta di ${r.from.handle}`} title="Rifiuta"
+              className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-white/60 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-white">✕</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ———— pannello "chi ti ha messo like" / "i tuoi match", tab Persone ———— */
-function LikesMatchesPanel({ likesMe, matches, onOpenProfile, onLikeBack, onMessage, isOnline }) {
+function LikesMatchesPanel({ likesMe, matches, requests, onAcceptRequest, onDeclineRequest, onOpenProfile, onLikeBack, onMessage, isOnline }) {
   const Row = ({ u, right }) => (
     <div className="flex items-center gap-2">
       <button onClick={() => onOpenProfile(u.id)}
@@ -1253,6 +1520,7 @@ function LikesMatchesPanel({ likesMe, matches, onOpenProfile, onLikeBack, onMess
   );
   return (
     <div className="space-y-6">
+      <RequestsList requests={requests} onAccept={onAcceptRequest} onDecline={onDeclineRequest} isOnline={isOnline} />
       <div>
         <div className="font-mono2 text-[10px] uppercase tracking-[0.2em] text-white/40 px-1 mb-2">chi ti ha messo like · {likesMe.length}</div>
         {likesMe.length === 0 ? (
@@ -1293,81 +1561,115 @@ function LikesMatchesPanel({ likesMe, matches, onOpenProfile, onLikeBack, onMess
 }
 
 /* ———— feed persone ———— */
-function PeopleDeck({ people, onOpenProfile, onSwipe }) {
-  if (people.length === 0) {
+/* una tessera della griglia: foto di copertina, nome ed età, e due azioni rapide
+   (mi piace e scrivere). Il server dice per ogni persona come si può contattare. */
+function PersonTile({ p, onOpenProfile, onLike, onContact, onRose, isOnline }) {
+  const photos = p.photos || [];
+  const cover = photos.find((ph) => !ph.hidden) || photos[0] || null;
+  const c = p.contact;
+  const tileBtn = "w-8 h-8 rounded-full flex items-center justify-center backdrop-blur focus:outline-none focus:ring-2 focus:ring-white transition-transform active:scale-95";
+  return (
+    <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-neutral-200 shadow-sm">
+      <button onClick={() => onOpenProfile(p)} aria-label={`Apri il profilo di ${p.handle}`}
+        className="absolute inset-0 w-full h-full text-left focus:outline-none focus:ring-2 focus:ring-violet-400">
+        {cover ? (
+          <PhotoView photo={cover} thumb className="absolute inset-0 w-full h-full object-cover" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center" style={{ background: GRAD }}>
+            {p.restricted
+              ? <span className="text-white/90"><LockIcon size={40} /></span>
+              : <Avatar src={p.avatar} name={p.name} size={72} ring />}
+          </div>
+        )}
+      </button>
+
+      <div className="absolute inset-x-0 bottom-0 p-2.5 pt-12 pointer-events-none" style={{ background: "linear-gradient(180deg,transparent,rgba(8,6,20,.85))" }}>
+        <div className="flex items-center gap-1.5 text-white pr-[4.75rem]">
+          {isOnline(p.id) && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#22C55E" }} title="Online" />}
+          <span className="font-display font-bold text-[15px] leading-none truncate">{p.name}</span>
+          <span className="font-semibold text-white/75 text-[13px] leading-none shrink-0">{p.age}</span>
+          {p.age_verified && <span className="text-green-300 shrink-0" title="Età verificata"><ShieldCheckIcon size={13} /></span>}
+        </div>
+      </div>
+
+      <div className="absolute right-2 bottom-2 flex gap-1.5">
+        <button onClick={() => onLike(p)} disabled={!!p.liked}
+          aria-label={p.liked ? `Hai messo mi piace a ${p.handle}` : `Metti mi piace a ${p.handle}`} aria-pressed={!!p.liked}
+          title={p.liked ? "Ti piace" : "Mi piace"} className={tileBtn}
+          style={{ background: p.liked ? BTN_BG : "rgba(255,255,255,0.22)", color: "#fff" }}>
+          <HeartIcon filled={!!p.liked} size={15} />
+        </button>
+        {(c === "open" || c === "request") && (
+          <button onClick={() => onContact(p)} aria-label={c === "open" ? `Scrivi a ${p.handle}` : `Chiedi di scrivere a ${p.handle}`}
+            title={c === "open" ? "Scrivi" : "Chiedi di scrivere"} className={tileBtn}
+            style={{ background: BTN_BG, color: BTN_TXT }}>
+            <SendIcon size={14} />
+          </button>
+        )}
+        {c === "rose" && (
+          <button onClick={() => onRose(p)} aria-label={`Invia una rosa a ${p.handle} per scrivere`} title={`Rosa · ${ROSE_COST_LABEL}`}
+            className={`${tileBtn} text-[15px]`} style={{ background: BTN_BG }}>
+            <span aria-hidden="true">🌹</span>
+          </button>
+        )}
+        {c === "incoming" && (
+          <button onClick={() => onContact(p)} aria-label={`Accetta la richiesta di ${p.handle}`} title="Accetta la richiesta di messaggio"
+            className={tileBtn} style={{ background: BTN_BG, color: BTN_TXT }}>
+            <CheckIcon size={15} />
+          </button>
+        )}
+        {c === "pending" && (
+          <span className={`${tileBtn} cursor-default`} title="Richiesta inviata" style={{ background: "rgba(255,255,255,0.22)", color: "#fff" }}>
+            <ClockIcon size={14} />
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PeopleGrid({ people, hasMore, loading, onLoadMore, onOpenProfile, onLike, onContact, onRose, isOnline }) {
+  const sentinel = useRef(null);
+
+  /* scorrimento infinito: quando si arriva vicino al fondo, carica la pagina dopo */
+  useEffect(() => {
+    if (!hasMore || loading) return;
+    const el = sentinel.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const obs = new IntersectionObserver((entries) => { if (entries[0].isIntersecting) onLoadMore(); }, { rootMargin: "600px" });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [hasMore, loading, onLoadMore, people.length]);
+
+  if (people.length === 0 && !loading) {
     return (
       <div className="h-full flex items-center justify-center px-8 text-center">
         <div>
           <div className="font-display text-2xl font-bold text-neutral-800">Nessuno qui, per ora.</div>
-          <p className="font-body text-neutral-500 mt-2">Sei tra i primi! Invita qualcuno e questo feed prenderà vita.</p>
+          <p className="font-body text-neutral-500 mt-2">Sei tra i primi! Invita qualcuno e questa griglia prenderà vita.</p>
         </div>
       </div>
     );
   }
   return (
-    <div className="h-full overflow-y-auto snap-y-strong no-scrollbar">
-      {people.map((p, i) => {
-        /* il server manda solo le foto che posso vedere: le "solo amici" di chi
-           non è mio amico non arrivano proprio, quindi non possono comparire qui */
-        const hero = p.photos?.[0] ? assetUrl(p.photos[0].url) : null;
-        return (
-          <section key={p.id} className="snap-card h-full relative flex items-stretch justify-center p-3 sm:p-5">
-            <div className="relative w-full max-w-md rounded-[28px] overflow-hidden shadow-xl">
-              {hero ? (
-                <img src={hero} alt={p.name} className="absolute inset-0 w-full h-full object-cover" />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center pb-24" style={{ background: GRAD }}>
-                  {p.restricted
-                    ? <span className="text-white/90"><LockIcon size={64} /></span>
-                    : <Avatar src={p.avatar} name={p.name} size={112} ring />}
-                </div>
-              )}
-              <div className="absolute inset-0" style={{ background: "linear-gradient(180deg,rgba(0,0,0,.25) 0%,transparent 30%,transparent 45%,rgba(8,6,20,.88) 100%)" }} />
-              <div className="absolute top-0 left-0 right-0 p-5 flex items-center justify-between">
-                <span className="font-mono2 text-[11px] text-white/85 bg-black/30 backdrop-blur px-2.5 py-1 rounded-full">
-                  {String(i + 1).padStart(2, "0")} / {String(people.length).padStart(2, "0")}
-                </span>
-                <span className="font-mono2 text-[11px] text-white/85 bg-black/30 backdrop-blur px-2.5 py-1 rounded-full flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full pulse-dot" style={{ background: "#22C55E" }} />
-                  iscritto
-                </span>
-              </div>
-              <div className="absolute bottom-0 left-0 right-0 p-6 space-y-3.5">
-                <div>
-                  <div className="font-display text-white text-4xl font-extrabold leading-none tracking-tight flex items-center gap-2 flex-wrap">
-                    {p.name} <span className="font-semibold text-white/70 text-3xl">{p.age}</span> <GenderChip gender={p.gender} />
-                  </div>
-                  <div className="font-mono2 text-white/70 text-xs mt-2">@{p.handle}</div>
-                </div>
-                {p.bio && <p className="font-body text-white/90 text-[15px] leading-snug max-w-[36ch]">{p.bio}</p>}
-                <div className="flex items-center justify-center gap-5 pt-1">
-                  <button onClick={() => onSwipe(p.id, "pass")} aria-label={`Passa oltre il profilo di ${p.handle}`} title="Passa"
-                    className="w-16 h-16 rounded-full bg-white text-neutral-400 shadow-xl flex items-center justify-center hover:text-neutral-600 hover:scale-105 active:scale-95 transition-all focus:outline-none focus:ring-2 focus:ring-white">
-                    <XIcon size={26} />
-                  </button>
-                  <button onClick={() => onOpenProfile(p)} aria-label={`Vedi il profilo completo di ${p.handle}`} title="Vedi profilo"
-                    className="w-10 h-10 rounded-full bg-black/30 backdrop-blur text-white flex items-center justify-center hover:bg-black/50 transition-colors focus:outline-none focus:ring-2 focus:ring-white">
-                    <span className="font-display font-bold text-base leading-none">i</span>
-                  </button>
-                  <button onClick={() => onSwipe(p.id, "like")} aria-label={`Metti like al profilo di ${p.handle}`} title="Mi piace"
-                    className="w-16 h-16 rounded-full shadow-xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all focus:outline-none focus:ring-2 focus:ring-white"
-                    style={{ background: BTN_BG, color: BTN_TXT }}>
-                    <CheckIcon size={28} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </section>
-        );
-      })}
+    <div className="h-full overflow-y-auto no-scrollbar p-3 sm:p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2.5 sm:gap-3">
+        {people.map((p) => (
+          <PersonTile key={p.id} p={p} isOnline={isOnline}
+            onOpenProfile={onOpenProfile} onLike={onLike} onContact={onContact} onRose={onRose} />
+        ))}
+      </div>
+      <div ref={sentinel} className="h-20 flex items-center justify-center font-mono2 text-[11px] text-neutral-400">
+        {loading ? "carico…" : !hasMore && people.length > 0 ? "Hai visto tutti." : ""}
+      </div>
     </div>
   );
 }
 
-/* ———— rail stanze ———— */
-function RoomsRail({ rooms, dms, activeId, onPick, unread, mutedIds, onAvatar, isOnline }) {
+function RoomsRail({ rooms, dms, activeId, onPick, unread, mutedIds, onAvatar, isOnline, requests, onAcceptRequest, onDeclineRequest }) {
   return (
     <div className="space-y-6">
+      <RequestsList requests={requests} onAccept={onAcceptRequest} onDecline={onDeclineRequest} isOnline={isOnline} />
       <div>
         <div className="font-mono2 text-[10px] uppercase tracking-[0.2em] text-white/40 px-3 mb-2">stanze</div>
         <div className="space-y-1">
@@ -1419,6 +1721,70 @@ function RoomsRail({ rooms, dms, activeId, onPick, unread, mutedIds, onAvatar, i
 }
 
 /* ———————————————— APP ———————————————— */
+/* conferma prima di spendere: cos'è la rosa e cosa succede se viene rifiutata */
+function RoseConfirm({ person, tokens, onCancel, onConfirm }) {
+  useEffect(() => {
+    if (!person) return;
+    const onKey = (e) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [person, onCancel]);
+  if (!person) return null;
+  const enough = (tokens || 0) >= 1.99;
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      <div onClick={(e) => e.stopPropagation()}
+        className="relative w-full sm:max-w-sm bg-white sm:rounded-3xl rounded-t-3xl p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] fade-up shadow-2xl font-body">
+        <div className="text-4xl text-center" aria-hidden="true">🌹</div>
+        <div className="font-display text-xl font-extrabold text-neutral-900 text-center mt-2">Una rosa per @{person.handle}</div>
+        <p className="text-neutral-500 text-sm text-center mt-2">
+          La rosa mette la tua richiesta di messaggio in cima e in evidenza. @{person.handle} decide comunque se accettare:
+          se rifiuta non puoi riprovare e la rosa non viene restituita.
+        </p>
+        <div className="mt-4 rounded-xl bg-neutral-50 border border-neutral-200 px-3.5 py-2.5 font-mono2 text-[12px] text-neutral-600 space-y-1">
+          <div className="flex justify-between"><span>Costo</span><span>{ROSE_COST_LABEL}</span></div>
+          <div className="flex justify-between"><span>Il tuo saldo</span><span>{(tokens || 0).toFixed(2)}</span></div>
+        </div>
+        {!enough && <p className="text-pink-600 text-sm mt-2 text-center">Saldo insufficiente. La ricarica non è ancora disponibile.</p>}
+        <BtnPrimary onClick={() => onConfirm(person)} disabled={!enough} className="w-full mt-4 py-3.5 text-base disabled:opacity-50">
+          Invia la rosa · {ROSE_COST_LABEL}
+        </BtnPrimary>
+        <button onClick={onCancel} className="w-full py-2 mt-1 text-neutral-400 text-sm hover:text-neutral-600">Annulla</button>
+      </div>
+    </div>
+  );
+}
+
+/* serve la verifica dell'età: spiega perché e la avvia */
+function AgeGateModal({ open, onClose, onVerify }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div onClick={(e) => e.stopPropagation()}
+        className="relative w-full sm:max-w-sm bg-white sm:rounded-3xl rounded-t-3xl p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] fade-up shadow-2xl font-body text-center">
+        <div className="w-16 h-16 mx-auto rounded-full flex items-center justify-center mb-3" style={{ background: BTN_BG, color: BTN_TXT }}>
+          <ShieldCheckIcon size={30} />
+        </div>
+        <div className="font-display text-xl font-extrabold text-neutral-900">Verifica la tua età</div>
+        <p className="text-neutral-500 text-sm mt-2">
+          Per usare Persone, i messaggi privati e la stanza rosa devi prima verificare di essere maggiorenne.
+          Si fa una volta sola, e così ogni persona che incontri qui ha fatto lo stesso.
+        </p>
+        <BtnPrimary onClick={onVerify} className="w-full mt-5 py-3.5 text-base">Verifica ora</BtnPrimary>
+        <button onClick={onClose} className="w-full py-2 mt-1 text-neutral-400 text-sm hover:text-neutral-600">Non ora</button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("foyer_token"));
   const [me, setMe] = useState(null);
@@ -1440,6 +1806,11 @@ export default function App() {
   const [onlineIds, setOnlineIds] = useState(() => new Set());
   const [likesMe, setLikesMe] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [peopleNext, setPeopleNext] = useState(null);        // cursore della prossima pagina della griglia
+  const [peopleLoading, setPeopleLoading] = useState(false);
+  const [dmRequests, setDmRequests] = useState({ incoming: [], outgoing: [] });
+  const [gateOpen, setGateOpen] = useState(false);           // finestra "verifica la tua età"
+  const [roseTarget, setRoseTarget] = useState(null);        // persona a cui sto per mandare una rosa
   const isOnline = useCallback((id) => onlineIds.has(id), [onlineIds]);
   const [unread, setUnread] = useState(() => new Set()); // id delle DM con messaggi non letti
   /* ref: servono ai listener del socket, che vivono più a lungo di un singolo render */
@@ -1448,6 +1819,13 @@ export default function App() {
   const meIdRef = useRef(null);
   const profileIdRef = useRef(null);
   const refreshRef = useRef({});
+  const peopleNextRef = useRef(null);
+  const loadingMoreRef = useRef(false);
+
+  const refreshDmRequests = useCallback(() => {
+    if (!token) return Promise.resolve();
+    return api("/api/dm-requests", { token }).then(setDmRequests).catch(console.error);
+  }, [token]);
 
   const refreshLikesMe = useCallback(() => {
     if (!token) return Promise.resolve();
@@ -1469,6 +1847,8 @@ export default function App() {
   }, [toast]);
 
   const isGuest = !token || !me;
+  /* il gate è attivo sul server e io non ho ancora verificato l'età */
+  const gateBlocked = !!(me?.age_gate && !me?.age_verified);
   const requireAuth = (reason) => setAuth({ open: true, reason });
 
   /* profilo mio al load se ho il token */
@@ -1488,9 +1868,46 @@ export default function App() {
   }, []);
 
   /* ricarichi dal server: feed Persone, DM, amici/bloccati, profilo eventualmente aperto */
+  const PEOPLE_PAGE = 36;
   const refreshPeople = useCallback(() => {
     if (!token) return Promise.resolve();
-    return api("/api/people", { token }).then(setPeople).catch(console.error);
+    setPeopleLoading(true);
+    return api(`/api/people?limit=${PEOPLE_PAGE}`, { token })
+      .then((r) => { setPeople(r.people); setPeopleNext(r.next); })
+      .catch((e) => { if (e.code !== "AGE_GATE") console.error(e); }) // senza verifica la griglia resta chiusa
+      .finally(() => setPeopleLoading(false));
+  }, [token]);
+
+  /* scorrimento infinito: aggiunge la pagina dopo, senza ripetizioni */
+  const loadMorePeople = useCallback(() => {
+    if (!token || !peopleNextRef.current || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setPeopleLoading(true);
+    api(`/api/people?limit=${PEOPLE_PAGE}&cursor=${encodeURIComponent(peopleNextRef.current)}`, { token })
+      .then((r) => {
+        setPeople((cur) => {
+          const known = new Set(cur.map((p) => p.id));
+          return [...cur, ...r.people.filter((p) => !known.has(p.id))];
+        });
+        setPeopleNext(r.next);
+      })
+      .catch(console.error)
+      .finally(() => { loadingMoreRef.current = false; setPeopleLoading(false); });
+  }, [token]);
+
+  /* aggiornamento in tempo reale (qualcuno ha cambiato profilo/foto): aggiorna le tessere già
+     caricate e aggiunge i nuovi in cima, senza far saltare la posizione di scorrimento */
+  const mergePeople = useCallback(() => {
+    if (!token) return Promise.resolve();
+    return api(`/api/people?limit=${PEOPLE_PAGE}`, { token })
+      .then((r) => {
+        setPeople((cur) => {
+          const fresh = new Map(r.people.map((p) => [p.id, p]));
+          const known = new Set(cur.map((p) => p.id));
+          return [...r.people.filter((p) => !known.has(p.id)), ...cur.map((p) => fresh.get(p.id) || p)];
+        });
+      })
+      .catch((e) => { if (e.code !== "AGE_GATE") console.error(e); });
   }, [token]);
   const refreshDms = useCallback(() => {
     if (!token) return Promise.resolve();
@@ -1512,12 +1929,13 @@ export default function App() {
   dmsRef.current = dms;
   meIdRef.current = me?.id || null;
   profileIdRef.current = profile?.id || null;
-  refreshRef.current = { people: refreshPeople, dms: refreshDms, relations: refreshRelations, profile: refreshOpenProfile, likesMe: refreshLikesMe, matches: refreshMatches };
+  peopleNextRef.current = peopleNext;
+  refreshRef.current = { people: mergePeople, peopleReset: refreshPeople, dms: refreshDms, relations: refreshRelations, profile: refreshOpenProfile, likesMe: refreshLikesMe, matches: refreshMatches, dmRequests: refreshDmRequests };
 
   /* persone + DM + relazioni quando loggato */
   useEffect(() => {
-    if (isGuest) { setPeople([]); setDms([]); setRelations(EMPTY_RELATIONS); setLikesMe([]); setMatches([]); setOnlineIds(new Set()); return; }
-    refreshPeople(); refreshDms(); refreshRelations(); refreshLikesMe(); refreshMatches(); refreshOnline();
+    if (isGuest) { setPeople([]); setPeopleNext(null); setDms([]); setRelations(EMPTY_RELATIONS); setLikesMe([]); setMatches([]); setOnlineIds(new Set()); setDmRequests({ incoming: [], outgoing: [] }); return; }
+    refreshPeople(); refreshDms(); refreshRelations(); refreshLikesMe(); refreshMatches(); refreshOnline(); refreshDmRequests();
   }, [isGuest, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* aprendo "Persone" il feed si ricarica sempre: niente più pagina da aggiornare a mano */
@@ -1567,6 +1985,15 @@ export default function App() {
     });
     /* qualcuno mi ha messo like e ora è reciproco: lo sapevo già, lui no */
     s.on("match-changed", () => { refreshRef.current.likesMe?.(); refreshRef.current.matches?.(); setToast("Hai un nuovo match 🎉"); });
+    /* qualcuno chiede di scrivermi (o mi manda una rosa) */
+    s.on("dm-request-received", () => { refreshRef.current.dmRequests?.(); setToast("Hai una nuova richiesta di messaggio."); });
+    /* una richiesta è stata accettata (o rifiutata da me): si apre la conversazione, cambiano gli stati sulle tessere */
+    s.on("dm-request-accepted", () => { refreshRef.current.dmRequests?.(); refreshRef.current.dms?.(); refreshRef.current.people?.(); refreshRef.current.profile?.(); });
+    s.on("age-verified", () => {
+      setMe((m) => (m ? { ...m, age_verified: true } : m));
+      setToast("Età verificata! Ora puoi usare Persone e i messaggi privati.");
+      refreshRef.current.peopleReset?.(); refreshRef.current.likesMe?.(); refreshRef.current.matches?.();
+    });
     s.on("errorMsg", (e) => { console.warn("socket:", e); setToast(e); });
     s.on("connect_error", (e) => { console.warn("socket connect_error:", e.message); setToast(`Connessione al server fallita: ${e.message}`); });
     return () => { clearTimeout(tPeople); clearTimeout(tRel); s.disconnect(); };
@@ -1598,7 +2025,7 @@ export default function App() {
     if (userId === me?.id) return setMyProfileOpen(true);
     if (String(userId).startsWith("guest-")) return; // i guest non hanno un profilo
     try { setProfile(await api(`/api/people/${userId}`, { token })); }
-    catch (e) { setToast(e.message || "Profilo non disponibile"); }
+    catch (e) { handleApiError(e); }
   };
 
   const openDm = async (user, promptQ) => {
@@ -1618,7 +2045,10 @@ export default function App() {
           socketRef.current?.emit("message", { roomId: dm.id, text: `(rispondo al tuo prompt: "${promptQ}")` });
         }, 400);
       }
-    } catch (e) { setToast(e.message); }
+    } catch (e) {
+      if (e.code === "REQUEST_REQUIRED") await sendRequest(user, false);
+      else handleApiError(e);
+    }
   };
 
   /* azioni su un utente: amicizia, blocco, silenzia */
@@ -1636,6 +2066,7 @@ export default function App() {
     decline: (id) => relCall("DELETE", `/api/friends/${id}`),   // rifiuta / annulla / elimina amico
     block: async (id) => {
       await relCall("POST", `/api/blocks/${id}`, "Utente bloccato");
+      setPeople((cur) => cur.filter((p) => p.id !== id));
       /* se stavo chattando con lui, torno alla prima stanza */
       setActiveId((cur) => (dmsRef.current.find((d) => d.id === cur)?.other?.id === id ? (rooms[0]?.id || null) : cur));
     },
@@ -1646,27 +2077,100 @@ export default function App() {
     openActions: (u) => setActionTarget(u),
   };
 
-  /* swipe nel feed Persone: like/pass, con rimozione ottimistica dalla pila e match */
-  const onSwipe = useCallback(async (userId, action) => {
-    setPeople((cur) => cur.filter((p) => p.id !== userId)); // sparisce subito dal mazzo
-    try {
-      const r = await api(`/api/swipes/${userId}`, { method: "POST", token, body: { action } });
-      if (r.match) { setToast("È un match! 🎉 Lo trovi anche in alto, nei tuoi match."); refreshMatches(); }
-    } catch (e) {
-      refreshPeople(); // qualcosa è andato storto: ripristino il mazzo vero dal server
-      setToast(e.message);
-    }
-  }, [token, refreshMatches, refreshPeople]);
+  /* errori dell'API: se manca la verifica età si apre la finestra giusta, altrimenti un avviso */
+  const handleApiError = useCallback((e) => {
+    if (e?.code === "AGE_GATE") setGateOpen(true);
+    else setToast(e?.message || "Qualcosa è andato storto");
+  }, []);
 
-  /* "metti like" direttamente dal pannello "chi ti ha messo like": equivale a uno swipe con like */
+  const startAgeVerify = useCallback(async () => {
+    try {
+      const r = await api("/api/verify-age/start", { method: "POST", token });
+      if (r.already) { setMe((m) => (m ? { ...m, age_verified: true } : m)); setGateOpen(false); }
+      else if (r.url) window.open(r.url, "_blank", "noopener");
+    } catch (e) { setToast(e.message); }
+  }, [token]);
+
+  /* aggiorna lo stato "come posso contattarlo" sulla tessera e sul profilo aperto */
+  const setContactState = (userId, contact) => {
+    setPeople((cur) => cur.map((p) => (p.id === userId ? { ...p, contact } : p)));
+    setProfile((cur) => (cur && cur.id === userId ? { ...cur, contact } : cur));
+  };
+
+  /* mi piace sulla tessera (resta segnato; se è reciproco è un match) */
+  const onLike = useCallback(async (person) => {
+    if (person.liked) return;
+    const setLiked = (liked, extra = {}) => setPeople((cur) => cur.map((p) => (p.id === person.id ? { ...p, liked, ...extra } : p)));
+    setLiked(true);
+    try {
+      const r = await api(`/api/swipes/${person.id}`, { method: "POST", token, body: { action: "like" } });
+      if (r.match) { setLiked(true, { matched: true, contact: "open" }); setToast(`È un match con @${person.handle}! 🎉`); refreshMatches(); }
+    } catch (e) { setLiked(false); handleApiError(e); }
+  }, [token, refreshMatches, handleApiError]);
+
+  /* richiesta di messaggio, gratuita o con una rosa (priorità a pagamento) */
+  const sendRequest = async (person, rose) => {
+    try {
+      const r = await api(`/api/dm-requests/${person.id}`, { method: "POST", token, body: { rose } });
+      if (typeof r.tokens === "number") setMe((m) => (m ? { ...m, tokens: r.tokens } : m));
+      if (r.dm) {
+        /* si poteva già scrivere (o la richiesta era incrociata): apro direttamente la chat */
+        await refreshDms();
+        setProfile(null); setTab("rooms"); setActiveId(r.dm.id);
+        if (r.accepted) setToast("Richiesta accettata: ora potete scrivervi.");
+      } else {
+        setContactState(person.id, "pending");
+        refreshDmRequests();
+        setToast(rose ? `Rosa inviata a @${person.handle} 🌹` : `Richiesta inviata a @${person.handle}`);
+      }
+    } catch (e) {
+      if (e.code === "ROSE_REQUIRED") { setContactState(person.id, "rose"); setToast(e.message); }
+      else handleApiError(e);
+    }
+    setRoseTarget(null);
+  };
+
+  /* il pulsante "scrivi" fa la cosa giusta in base a come si può contattare la persona */
+  const contactAction = (person, promptQ) => {
+    switch (person.contact) {
+      case "open": return openDm(person, promptQ);
+      case "request": return sendRequest(person, false);
+      case "rose": return setRoseTarget(person);
+      case "incoming": return acceptRequest(person);
+      case "pending": return setToast("Hai già inviato una richiesta: aspetta la risposta.");
+      case "closed": return setToast("Non è possibile scrivere a questa persona.");
+      default: return undefined;
+    }
+  };
+
+  const acceptRequest = async (from) => {
+    try {
+      const r = await api(`/api/dm-requests/${from.id}/accept`, { method: "POST", token });
+      await Promise.all([refreshDmRequests(), refreshDms()]);
+      setContactState(from.id, "open");
+      setMobileRailOpen(false); setProfile(null); setTab("rooms"); setActiveId(r.dm.id);
+    } catch (e) { handleApiError(e); }
+  };
+
+  /* rifiuto silenzioso: chi ha chiesto non riceve nessun avviso */
+  const declineRequest = async (from) => {
+    try {
+      await api(`/api/dm-requests/${from.id}/decline`, { method: "POST", token });
+      setContactState(from.id, "closed");
+      refreshDmRequests();
+    } catch (e) { handleApiError(e); }
+  };
+
+  /* "metti like" direttamente dal pannello "chi ti ha messo like" */
   const onLikeBack = useCallback(async (userId) => {
     setLikesMe((cur) => cur.filter((u) => u.id !== userId));
     try {
       const r = await api(`/api/swipes/${userId}`, { method: "POST", token, body: { action: "like" } });
       if (r.match) setToast("È un match! 🎉");
       refreshMatches();
-    } catch (e) { refreshLikesMe(); setToast(e.message); }
-  }, [token, refreshMatches, refreshLikesMe]);
+      setPeople((cur) => cur.map((p) => (p.id === userId ? { ...p, liked: true, matched: !!r.match, contact: r.match ? "open" : p.contact } : p)));
+    } catch (e) { refreshLikesMe(); handleApiError(e); }
+  }, [token, refreshMatches, refreshLikesMe, handleApiError]);
 
   /* bloccati e silenziati: i loro messaggi nelle stanze non si vedono; le DM dei bloccati spariscono */
   const blockedIds = useMemo(() => new Set(relations.blocked.map((u) => u.id)), [relations]);
@@ -1690,6 +2194,7 @@ export default function App() {
     setToken(null); setMe(null); setDms([]); setPeople([]);
     setRelations(EMPTY_RELATIONS); setUnread(new Set()); setActionTarget(null); setProfile(null);
     setLikesMe([]); setMatches([]); setOnlineIds(new Set());
+    setPeopleNext(null); setDmRequests({ incoming: [], outgoing: [] }); setGateOpen(false); setRoseTarget(null);
   };
 
   const activeRoom =
@@ -1727,9 +2232,14 @@ export default function App() {
 
         <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 shrink-0">
           {!isGuest && (
-            <span className="hidden sm:inline font-mono2 text-[12px] text-white bg-white/15 px-2.5 py-1 rounded-full shrink-0" title="Streak giornaliera">
-              🔥 {me.streak || 1}
-            </span>
+            <>
+              <span className="hidden sm:inline font-mono2 text-[12px] text-white bg-white/15 px-2.5 py-1 rounded-full shrink-0" title="Streak giornaliera">
+                🔥 {me.streak || 1}
+              </span>
+              <span className="hidden sm:flex items-center gap-1 font-mono2 text-[12px] text-white bg-white/15 px-2.5 py-1 rounded-full shrink-0" title="Saldo per le rose">
+                <span aria-hidden="true">🌹</span> {(me.tokens ?? 0).toFixed(2)}
+              </span>
+            </>
           )}
           {isGuest ? (
             <BtnPrimary onClick={() => requireAuth("Crea il tuo profilo per sbloccare tutte le stanze.")} className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm whitespace-nowrap">
@@ -1740,9 +2250,9 @@ export default function App() {
               <button onClick={() => setMyProfileOpen(true)} aria-label="Apri il mio profilo"
                 className="relative rounded-full focus:outline-none focus:ring-2 focus:ring-white hover:opacity-90 transition-opacity shrink-0">
                 <Avatar src={me.avatar} name={me.name} size={32} ring />
-                {relations.incoming.length > 0 && (
+                {relations.incoming.length + dmRequests.incoming.length > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white" style={{ background: "#FF4D8D" }}
-                    title={`${relations.incoming.length} richieste di amicizia`} />
+                    title={`${relations.incoming.length} richieste di amicizia, ${dmRequests.incoming.length} di messaggio`} />
                 )}
               </button>
               <button onClick={logout} className="hidden sm:inline font-mono2 text-[11px] text-white/70 hover:text-white shrink-0" title="Esci">esci</button>
@@ -1756,20 +2266,22 @@ export default function App() {
           <>
             <aside className="hidden md:block w-72 shrink-0 overflow-y-auto no-scrollbar p-4" style={{ background: "#14121F" }}>
               <RoomsRail rooms={rooms} dms={visibleDms} activeId={activeId} onPick={setActiveId}
-                unread={unread} mutedIds={mutedIds} onAvatar={setActionTarget} isOnline={isOnline} />
+                unread={unread} mutedIds={mutedIds} onAvatar={setActionTarget} isOnline={isOnline}
+                requests={dmRequests.incoming} onAcceptRequest={acceptRequest} onDeclineRequest={declineRequest} />
             </aside>
             {mobileRailOpen && (
               <div className="md:hidden absolute inset-0 z-40 flex">
                 <div className="w-72 max-w-[80%] h-full overflow-y-auto no-scrollbar p-4 fade-up" style={{ background: "#14121F" }}>
                   <RoomsRail rooms={rooms} dms={visibleDms} activeId={activeId}
                     onPick={(id) => { setActiveId(id); setMobileRailOpen(false); }}
-                    unread={unread} mutedIds={mutedIds} onAvatar={(u) => { setMobileRailOpen(false); setActionTarget(u); }} isOnline={isOnline} />
+                    unread={unread} mutedIds={mutedIds} onAvatar={(u) => { setMobileRailOpen(false); setActionTarget(u); }} isOnline={isOnline}
+                    requests={dmRequests.incoming} onAcceptRequest={acceptRequest} onDeclineRequest={declineRequest} />
                 </div>
                 <div className="flex-1 bg-black/50" onClick={() => setMobileRailOpen(false)} />
               </div>
             )}
             <main className="flex-1 min-w-0">
-              <ChatView room={activeRoom} meId={me?.id} isGuest={isGuest} messages={visibleMessages}
+              <ChatView room={activeRoom} meId={me?.id} isGuest={isGuest} gateBlocked={gateBlocked} onVerify={startAgeVerify} messages={visibleMessages}
                 onSend={handleSend} onOpenProfile={openProfileById} requireAuth={requireAuth}
                 dmOther={dmOther} onOpenActions={setActionTarget} />
             </main>
@@ -1783,6 +2295,7 @@ export default function App() {
                 {/* desktop: pannello sempre visibile, stesso posto della lista stanze */}
                 <aside className="hidden md:block w-72 shrink-0 overflow-y-auto no-scrollbar p-4" style={{ background: "#14121F" }}>
                   <LikesMatchesPanel likesMe={likesMe} matches={matches} isOnline={isOnline}
+                    requests={dmRequests.incoming} onAcceptRequest={acceptRequest} onDeclineRequest={declineRequest}
                     onOpenProfile={openProfileById} onLikeBack={onLikeBack} onMessage={openDm} />
                 </aside>
                 {/* mobile: lo stesso hamburger in alto a sinistra lo apre come cassetto */}
@@ -1790,6 +2303,7 @@ export default function App() {
                   <div className="md:hidden absolute inset-0 z-40 flex">
                     <div className="w-72 max-w-[80%] h-full overflow-y-auto no-scrollbar p-4 fade-up" style={{ background: "#14121F" }}>
                       <LikesMatchesPanel likesMe={likesMe} matches={matches} isOnline={isOnline}
+                        requests={dmRequests.incoming} onAcceptRequest={acceptRequest} onDeclineRequest={declineRequest}
                         onOpenProfile={(id) => { setMobileRailOpen(false); openProfileById(id); }}
                         onLikeBack={onLikeBack} onMessage={(u) => { setMobileRailOpen(false); openDm(u); }} />
                     </div>
@@ -1812,15 +2326,30 @@ export default function App() {
                     </BtnPrimary>
                   </div>
                 </div>
+              ) : gateBlocked ? (
+                <div className="h-full flex items-center justify-center p-6" style={{ background: "#FAFAFC" }}>
+                  <div className="text-center max-w-sm fade-up">
+                    <div className="w-16 h-16 mx-auto rounded-full flex items-center justify-center mb-4" style={{ background: BTN_BG, color: BTN_TXT }}>
+                      <ShieldCheckIcon size={30} />
+                    </div>
+                    <div className="font-display text-2xl font-extrabold text-neutral-900">Verifica la tua età per entrare</div>
+                    <p className="font-body text-neutral-500 mt-2">
+                      Qui si incontrano persone maggiorenni verificate. Ci vuole un attimo e si fa una volta sola.
+                    </p>
+                    <BtnPrimary onClick={startAgeVerify} className="mt-5 px-8 py-3.5">Verifica ora</BtnPrimary>
+                  </div>
+                </div>
               ) : (
-                <PeopleDeck people={people} onOpenProfile={(p) => openProfileById(p.id)} onSwipe={onSwipe} />
+                <PeopleGrid people={people} hasMore={!!peopleNext} loading={peopleLoading} onLoadMore={loadMorePeople}
+                  onOpenProfile={(p) => openProfileById(p.id)} onLike={onLike}
+                  onContact={(p) => contactAction(p)} onRose={setRoseTarget} isOnline={isOnline} />
               )}
             </main>
           </>
         )}
       </div>
 
-      <ProfileSheet user={profile} token={token} onClose={() => setProfile(null)} onMessage={openDm}
+      <ProfileSheet user={profile} token={token} onClose={() => setProfile(null)} onMessage={contactAction} onRose={setRoseTarget}
         relations={relations} actions={relActions} onOpenActions={setActionTarget} />
       <MyProfileSheet open={myProfileOpen} me={me} token={token} onClose={() => setMyProfileOpen(false)}
         onUpdate={(fn) => setMe((m) => (m ? fn(m) : m))}
@@ -1829,6 +2358,8 @@ export default function App() {
       <UserActionSheet target={actionTarget} relations={relations} actions={relActions}
         onClose={() => setActionTarget(null)} hideViewProfile={!!profile && profile.id === actionTarget?.id} />
       <AuthModal open={auth.open} reason={auth.reason} onClose={() => setAuth({ open: false, reason: "" })} onAuthed={onAuthed} />
+      <RoseConfirm person={roseTarget} tokens={me?.tokens} onCancel={() => setRoseTarget(null)} onConfirm={(p) => sendRequest(p, true)} />
+      <AgeGateModal open={gateOpen} onClose={() => setGateOpen(false)} onVerify={startAgeVerify} />
 
       {toast && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[70] max-w-sm w-[90%] fade-up">
