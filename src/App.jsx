@@ -260,7 +260,7 @@ function relStatus(userId, relations) {
 const outlineBtn = "rounded-2xl font-body font-bold text-sm border border-neutral-200 text-neutral-600 hover:bg-neutral-50 transition-colors focus:outline-none focus:ring-2 focus:ring-pink-400";
 
 /* pulsante "amicizia" che cambia in base allo stato (aggiungi / accetta / annulla / amici) */
-function FriendControl({ userId, relations, actions }) {
+function FriendControl({ userId, relations, actions, locked }) {
   const st = relStatus(userId, relations);
   if (st.blocked) {
     return <BtnPrimary onClick={() => actions.unblock(userId)} className="w-full py-3 text-sm">Sblocca</BtnPrimary>;
@@ -283,6 +283,7 @@ function FriendControl({ userId, relations, actions }) {
   if (st.outgoing) {
     return <button onClick={() => actions.decline(userId)} className={`w-full py-3 ${outlineBtn}`}>Richiesta inviata · Annulla</button>;
   }
+  if (locked) return null; // DM privati: l'amicizia aprirebbe la chat senza rosa, quindi non si offre
   return <BtnPrimary onClick={() => actions.addFriend(userId)} className="w-full py-3 text-sm">Aggiungi agli amici</BtnPrimary>;
 }
 
@@ -350,7 +351,7 @@ function UserActionSheet({ target, relations, actions, onClose, hideViewProfile 
               {st.incoming && <SheetItem label="Accetta richiesta" onClick={() => run(actions.accept)} />}
               {st.incoming && <SheetItem label="Rifiuta richiesta" onClick={() => run(actions.decline)} />}
               {st.outgoing && <SheetItem label="Annulla richiesta" onClick={() => run(actions.decline)} />}
-              {!st.incoming && !st.outgoing && <SheetItem label="Aggiungi agli amici" onClick={() => run(actions.addFriend)} />}
+              {!st.incoming && !st.outgoing && !target.dm_private && <SheetItem label="Aggiungi agli amici" onClick={() => run(actions.addFriend)} />}
               {muteItem}
               {dangerous("block", "Blocca", "Tocca ancora per bloccare", actions.block)}
             </>
@@ -639,7 +640,7 @@ function ContactControl({ user, onContact, onRose }) {
     return (
       <div className="space-y-2">
         <BtnPrimary onClick={() => onRose(user)} className="w-full py-3.5 text-base">🌹 Invia una rosa per scrivere · {ROSE_COST_LABEL}</BtnPrimary>
-        <p className="font-body text-[12px] text-neutral-400 text-center">@{user.handle} accetta messaggi solo da chi invia una rosa (che è anche un mi piace, in prima fila). Decide comunque lei/lui.</p>
+        <p className="font-body text-[12px] text-neutral-400 text-center">@{user.handle} accetta messaggi e richieste di amicizia solo da chi invia una rosa (che è anche un mi piace, in prima fila). Decide comunque lei/lui.</p>
       </div>
     );
   }
@@ -649,7 +650,31 @@ function ContactControl({ user, onContact, onRose }) {
   return null;
 }
 
-function ProfileSheet({ user, token, onClose, onMessage, onRose, relations, actions, onOpenActions }) {
+/* le stesse tre azioni della tessera (X, rosa, cuore), grandi, per il profilo aperto dalla griglia */
+function GridActionBar({ person, state, actions, tone = "dark" }) {
+  const st = state || {};
+  const base = "w-14 h-14 rounded-full flex items-center justify-center shadow-xl transition-transform hover:scale-105 active:scale-95 focus:outline-none focus:ring-2 focus:ring-pink-400 disabled:cursor-default disabled:hover:scale-100";
+  return (
+    <div className="flex items-center justify-center gap-5 px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <button onClick={() => actions.onPass(person)} disabled={!!st.liked} aria-label={`Scarta ${person.handle}`} title="Non mi interessa"
+        className={base} style={{ background: "#fff", color: "#6b7280", opacity: st.liked ? 0.35 : 1, border: tone === "light" ? "1px solid #e5e5e5" : "none" }}>
+        <XIcon size={22} />
+      </button>
+      <button onClick={() => actions.onRose(person)} disabled={!!st.rosed} aria-label={`Manda una rosa a ${person.handle}`}
+        title={st.rosed ? "Rosa già inviata" : `Manda una rosa (${ROSE_COST_LABEL}): è un mi piace e finisci in prima fila tra i suoi like`}
+        className={`${base} text-2xl`} style={{ background: tone === "light" ? "#FCE7F3" : "rgba(255,255,255,0.18)", opacity: st.rosed ? 0.45 : 1 }}>
+        <span aria-hidden="true">🌹</span>
+      </button>
+      <button onClick={() => actions.onLike(person)} disabled={!!st.liked} aria-pressed={!!st.liked}
+        aria-label={st.liked ? `Hai messo mi piace a ${person.handle}` : `Metti mi piace a ${person.handle}`} title={st.liked ? "Ti piace" : "Mi piace"}
+        className={base} style={{ background: BTN_BG, color: BTN_TXT }}>
+        <HeartIcon filled={!!st.liked} size={24} />
+      </button>
+    </div>
+  );
+}
+
+function ProfileSheet({ user, token, onClose, onMessage, onRose, relations, actions, onOpenActions, photosOnly, tileState, gridActions }) {
   const [likes, setLikes] = useState({}); // idx -> {liked, count}
 
   useEffect(() => {
@@ -663,6 +688,33 @@ function ProfileSheet({ user, token, onClose, onMessage, onRose, relations, acti
 
   if (!user) return null;
 
+  /* aperto dalla griglia: solo le foto e le tre azioni. Niente bio, prompt, amicizia né
+     messaggi: da qui si può solo piacere o scartare. Per parlare serve un match, oppure
+     bisogna incontrarsi in chat. */
+  if (photosOnly && !user.restricted) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
+        <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+        <div onClick={(e) => e.stopPropagation()} className="relative w-full sm:max-w-md bg-neutral-900 sm:rounded-3xl rounded-t-3xl overflow-hidden fade-up shadow-2xl">
+          <div className="absolute top-3 right-3 z-20">
+            <button onClick={onClose} aria-label="Chiudi (o premi ESC)" title="Chiudi (ESC)"
+              className="w-10 h-10 rounded-full bg-black/50 text-white backdrop-blur flex items-center justify-center hover:bg-black/70 shadow-lg focus:outline-none focus:ring-2 focus:ring-white">✕</button>
+          </div>
+          <PhotoCarousel photos={user.photos} className="h-[66vh] sm:h-[32rem]">
+            <div className="absolute inset-0 pointer-events-none" style={{ background: "linear-gradient(180deg,transparent 55%,rgba(0,0,0,.72))" }} />
+            <div className="absolute bottom-3 left-5 right-5 pointer-events-none">
+              <div className="font-display text-white text-2xl font-bold leading-none flex items-center gap-2 flex-wrap">
+                {user.name}, {user.age} <GenderChip gender={user.gender} />
+                {user.age_verified && <span className="text-green-300" title="Età verificata"><ShieldCheckIcon size={16} /></span>}
+              </div>
+            </div>
+          </PhotoCarousel>
+          <GridActionBar person={user} state={tileState} actions={gridActions} />
+        </div>
+      </div>
+    );
+  }
+
   /* vista limitata (profilo privato e non siamo amici): il backend manda solo
      nickname/età/genere — niente foto né bio. Si può comunque chiedere l'amicizia. */
   if (user.restricted) {
@@ -672,8 +724,10 @@ function ProfileSheet({ user, token, onClose, onMessage, onRose, relations, acti
         <div onClick={(e) => e.stopPropagation()}
           className="relative w-full sm:max-w-sm bg-white sm:rounded-3xl rounded-t-3xl p-8 fade-up shadow-2xl font-body text-center">
           <div className="absolute top-4 right-4 flex gap-2">
-            <button onClick={() => onOpenActions(user)} aria-label="Altre azioni" title="Altre azioni"
-              className="w-9 h-9 rounded-full bg-neutral-100 text-neutral-500 flex items-center justify-center hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-violet-400"><DotsIcon size={16} /></button>
+            {!photosOnly && (
+              <button onClick={() => onOpenActions(user)} aria-label="Altre azioni" title="Altre azioni"
+                className="w-9 h-9 rounded-full bg-neutral-100 text-neutral-500 flex items-center justify-center hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-violet-400"><DotsIcon size={16} /></button>
+            )}
             <button onClick={onClose} aria-label="Chiudi" title="Chiudi (ESC)"
               className="w-9 h-9 rounded-full bg-neutral-100 text-neutral-500 flex items-center justify-center hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-violet-400">✕</button>
           </div>
@@ -693,9 +747,11 @@ function ProfileSheet({ user, token, onClose, onMessage, onRose, relations, acti
               ? "Questo profilo non ha ancora verificato l'età, quindi non è visibile."
               : "Questo profilo è privato. Diventa amico per vederlo."}
           </p>
-          {!user.unverified && (
+          {photosOnly ? (
+            <GridActionBar person={user} state={tileState} actions={gridActions} tone="light" />
+          ) : !user.unverified && (
             <div className="mt-5 text-left space-y-2.5">
-              <FriendControl userId={user.id} relations={relations} actions={actions} />
+              <FriendControl userId={user.id} relations={relations} actions={actions} locked={user.dm_private && user.contact !== "open"} />
               <ContactControl user={user} onContact={onMessage} onRose={onRose} />
             </div>
           )}
@@ -797,7 +853,7 @@ function ProfileSheet({ user, token, onClose, onMessage, onRose, relations, acti
             </div>
           )}
 
-          <FriendControl userId={user.id} relations={relations} actions={actions} />
+          <FriendControl userId={user.id} relations={relations} actions={actions} locked={user.dm_private && user.contact !== "open"} />
           <ContactControl user={user} onContact={onMessage} onRose={onRose} />
           <div className="h-2" />
         </div>
@@ -1260,8 +1316,8 @@ function MyProfileSheet({ open, me, token, onClose, onUpdate, relations, relActi
                 <span className="block font-display font-bold text-neutral-900">DM privati</span>
                 <span className="block font-body text-[13px] text-neutral-500">
                   {me.dm_private
-                    ? "Per scriverti serve una rosa. Tu accetti o rifiuti sempre."
-                    : "Chiunque sia verificato può chiederti di scrivere. Tu accetti o rifiuti."}
+                    ? "Chi ti incontra in chat deve inviare una rosa per scriverti o chiederti l'amicizia. Tu accetti o rifiuti sempre."
+                    : "Chi ti incontra in chat può chiederti di scrivere. Tu accetti o rifiuti."}
                 </span>
               </span>
             </span>
@@ -1515,10 +1571,11 @@ function RequestsList({ requests, onAccept, onDecline, isOnline }) {
 }
 
 /* ———— pannello "chi ti ha messo like" / "i tuoi match", tab Persone ———— */
-function LikesMatchesPanel({ likesMe, matches, requests, onAcceptRequest, onDeclineRequest, onOpenProfile, onLikeBack, onMessage, isOnline }) {
-  const Row = ({ u, right }) => (
+function LikesMatchesPanel({ likesMe, matches, requests, onAcceptRequest, onDeclineRequest, onOpenProfile, onLikeBack, onPassLike, onMessage, isOnline }) {
+  /* "mode": i like si aprono come dalla griglia (solo foto, like/scarta); i match come profilo completo */
+  const Row = ({ u, right, mode }) => (
     <div className="flex items-center gap-2">
-      <button onClick={() => onOpenProfile(u.id)}
+      <button onClick={() => onOpenProfile(u.id, mode)}
         className="flex items-center gap-3 min-w-0 flex-1 text-left rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400">
         <Avatar src={u.avatar} name={u.name} size={36} online={isOnline(u.id)} />
         <span className="block font-body font-semibold text-[14px] truncate text-white/90">@{u.handle}</span>
@@ -1526,40 +1583,42 @@ function LikesMatchesPanel({ likesMe, matches, requests, onAcceptRequest, onDecl
       {right}
     </div>
   );
+  const round = "w-8 h-8 rounded-full flex items-center justify-center shrink-0 focus:outline-none focus:ring-2 focus:ring-white";
+  const ghost = `${round} text-white/60 hover:bg-white/10 hover:text-white`;
   return (
     <div className="space-y-6">
       <RequestsList requests={requests} onAccept={onAcceptRequest} onDecline={onDeclineRequest} isOnline={isOnline} />
       <div>
         <div className="font-mono2 text-[10px] uppercase tracking-[0.2em] text-white/40 px-1 mb-2">chi ti ha messo like · {likesMe.length}</div>
         {likesMe.length === 0 ? (
-          <p className="font-body text-[13px] text-white/40 px-1">Nessuno ancora — torna a dare un'occhiata più tardi.</p>
+          <p className="font-body text-[13px] text-white/40 px-1">Nessuno ancora — la lista si aggiorna da sola.</p>
         ) : (
           <div className="space-y-2">
-            {likesMe.map((u) => u.rose ? (
-              /* rosa: like con priorità + richiesta di messaggio; qui si accetta o si rifiuta */
-              <div key={u.id} className="rounded-xl p-1.5" style={{ background: "rgba(255,77,141,0.16)" }}>
-                <Row u={u} right={
-                  <>
-                    <button onClick={() => onAcceptRequest(u)} aria-label={`Accetta la rosa di ${u.handle} e scrivi`} title="Accetta e scrivi"
-                      className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 focus:outline-none focus:ring-2 focus:ring-white"
-                      style={{ background: BTN_BG, color: BTN_TXT }}>
-                      <CheckIcon size={15} />
-                    </button>
-                    <button onClick={() => onDeclineRequest(u)} aria-label={`Rifiuta la rosa di ${u.handle}`} title="Rifiuta"
-                      className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-white/60 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-white">✕</button>
-                  </>
-                } />
-                <div className="font-mono2 text-[10px] pl-[2.9rem] -mt-0.5" style={{ color: "#FF9AC4" }}>🌹 ti ha mandato una rosa</div>
-              </div>
-            ) : (
-              <Row key={u.id} u={u} right={
-                <button onClick={() => onLikeBack(u.id)} aria-label={`Metti like a ${u.handle}`} title="Metti like"
-                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 focus:outline-none focus:ring-2 focus:ring-white"
-                  style={{ background: BTN_BG, color: BTN_TXT }}>
-                  <SparkleHeartIcon size={14} />
-                </button>
-              } />
-            ))}
+            {likesMe.map((u) => {
+              /* se con la rosa è arrivata anche una richiesta di messaggio (da chat) si accetta/rifiuta qui;
+                 altrimenti si ricambia il mi piace (= match) o si scarta */
+              const buttons = u.request ? (
+                <>
+                  <button onClick={() => onAcceptRequest(u)} aria-label={`Accetta la rosa di ${u.handle} e scrivi`} title="Accetta e scrivi"
+                    className={round} style={{ background: BTN_BG, color: BTN_TXT }}><CheckIcon size={15} /></button>
+                  <button onClick={() => onDeclineRequest(u)} aria-label={`Rifiuta la rosa di ${u.handle}`} title="Rifiuta" className={ghost}>✕</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => onLikeBack(u.id)} aria-label={`Metti like a ${u.handle}`} title="Metti like"
+                    className={round} style={{ background: BTN_BG, color: BTN_TXT }}><SparkleHeartIcon size={14} /></button>
+                  <button onClick={() => onPassLike(u.id)} aria-label={`Scarta ${u.handle}`} title="Scarta" className={ghost}>✕</button>
+                </>
+              );
+              return u.rose ? (
+                <div key={u.id} className="rounded-xl p-1.5" style={{ background: "rgba(255,77,141,0.16)" }}>
+                  <Row u={u} mode="photos" right={buttons} />
+                  <div className="font-mono2 text-[10px] pl-[2.9rem] -mt-0.5" style={{ color: "#FF9AC4" }}>🌹 ti ha mandato una rosa</div>
+                </div>
+              ) : (
+                <Row key={u.id} u={u} mode="photos" right={buttons} />
+              );
+            })}
           </div>
         )}
       </div>
@@ -1570,11 +1629,9 @@ function LikesMatchesPanel({ likesMe, matches, requests, onAcceptRequest, onDecl
         ) : (
           <div className="space-y-2">
             {matches.map((u) => (
-              <Row key={u.id} u={u} right={
+              <Row key={u.id} u={u} mode="full" right={
                 <button onClick={() => onMessage(u)} aria-label={`Scrivi a ${u.handle}`} title="Scrivi"
-                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-white/60 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-white">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-                </button>
+                  className={ghost}><SendIcon size={15} /></button>
               } />
             ))}
           </div>
@@ -1584,14 +1641,12 @@ function LikesMatchesPanel({ likesMe, matches, requests, onAcceptRequest, onDecl
   );
 }
 
-/* ———— feed persone ———— */
 /* una tessera della griglia: foto di copertina, nome ed età, e tre azioni come nel vecchio
-   swipe — X (scarta), rosa (richiesta in cima alla lista di chi la riceve) e cuore (mi piace).
-   Il pulsante centrale cambia se si può già scrivere (amici/match) o c'è una richiesta in corso. */
-function PersonTile({ p, onOpenProfile, onLike, onPass, onContact, onRose, isOnline }) {
+   swipe — X (scarta), rosa (mi piace con priorità: in prima fila tra i like di chi la riceve)
+   e cuore (mi piace). Dalla griglia non si scrive a nessuno: per parlare serve un match. */
+function PersonTile({ p, onOpenProfile, onLike, onPass, onRose, isOnline }) {
   const photos = p.photos || [];
   const cover = photos.find((ph) => !ph.hidden) || photos[0] || null;
-  const c = p.contact;
   const btn = "w-9 h-9 rounded-full flex items-center justify-center backdrop-blur shadow-md focus:outline-none focus:ring-2 focus:ring-white transition-transform active:scale-95";
   return (
     <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-neutral-200 shadow-sm">
@@ -1623,30 +1678,11 @@ function PersonTile({ p, onOpenProfile, onLike, onPass, onContact, onRose, isOnl
             <XIcon size={17} />
           </button>
 
-          {(c === "request" || c === "rose") && (
-            <button onClick={() => onRose(p)} aria-label={`Invia una rosa a ${p.handle}`}
-              title={`Manda una rosa (${ROSE_COST_LABEL}): è un mi piace e finisci in prima fila tra i suoi like`}
-              className={`${btn} text-[17px]`} style={{ background: "rgba(255,255,255,0.22)" }}>
-              <span aria-hidden="true">🌹</span>
-            </button>
-          )}
-          {c === "open" && (
-            <button onClick={() => onContact(p)} aria-label={`Scrivi a ${p.handle}`} title="Scrivi"
-              className={btn} style={{ background: BTN_BG, color: BTN_TXT }}>
-              <SendIcon size={15} />
-            </button>
-          )}
-          {c === "incoming" && (
-            <button onClick={() => onContact(p)} aria-label={`Accetta la richiesta di ${p.handle}`} title="Accetta la richiesta di messaggio"
-              className={btn} style={{ background: BTN_BG, color: BTN_TXT }}>
-              <CheckIcon size={16} />
-            </button>
-          )}
-          {c === "pending" && (
-            <span className={`${btn} cursor-default`} title="Richiesta inviata" style={{ background: "rgba(255,255,255,0.22)", color: "#fff" }}>
-              <ClockIcon size={15} />
-            </span>
-          )}
+          <button onClick={() => onRose(p)} disabled={!!p.rosed} aria-label={`Invia una rosa a ${p.handle}`}
+            title={p.rosed ? "Rosa già inviata" : `Manda una rosa (${ROSE_COST_LABEL}): è un mi piace e finisci in prima fila tra i suoi like`}
+            className={`${btn} text-[17px]`} style={{ background: "rgba(255,255,255,0.22)", opacity: p.rosed ? 0.45 : 1 }}>
+            <span aria-hidden="true">🌹</span>
+          </button>
 
           <button onClick={() => onLike(p)} disabled={!!p.liked}
             aria-label={p.liked ? `Hai messo mi piace a ${p.handle}` : `Metti mi piace a ${p.handle}`} aria-pressed={!!p.liked}
@@ -1660,7 +1696,7 @@ function PersonTile({ p, onOpenProfile, onLike, onPass, onContact, onRose, isOnl
   );
 }
 
-function PeopleGrid({ people, hasMore, loading, onLoadMore, onOpenProfile, onLike, onPass, onContact, onRose, isOnline }) {
+function PeopleGrid({ people, hasMore, loading, onLoadMore, onOpenProfile, onLike, onPass, onRose, isOnline }) {
   const sentinel = useRef(null);
 
   /* scorrimento infinito: quando si arriva vicino al fondo, carica la pagina dopo */
@@ -1688,11 +1724,11 @@ function PeopleGrid({ people, hasMore, loading, onLoadMore, onOpenProfile, onLik
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2.5 sm:gap-3">
         {people.map((p) => (
           <PersonTile key={p.id} p={p} isOnline={isOnline}
-            onOpenProfile={onOpenProfile} onLike={onLike} onPass={onPass} onContact={onContact} onRose={onRose} />
+            onOpenProfile={onOpenProfile} onLike={onLike} onPass={onPass} onRose={onRose} />
         ))}
       </div>
       <div ref={sentinel} className="h-20 flex items-center justify-center font-mono2 text-[11px] text-neutral-400">
-        {loading ? "carico…" : !hasMore && people.length > 0 ? "Hai visto tutti." : ""}
+        {loading ? "carico…" : !hasMore && people.length > 0 ? "Hai visto tutti. Chi scarti ricompare dopo qualche settimana." : ""}
       </div>
     </div>
   );
@@ -1771,9 +1807,9 @@ function RoseConfirm({ person, tokens, onCancel, onConfirm }) {
         <div className="text-4xl text-center" aria-hidden="true">🌹</div>
         <div className="font-display text-xl font-extrabold text-neutral-900 text-center mt-2">Una rosa per @{person.handle}</div>
         <p className="text-neutral-500 text-sm text-center mt-2">
-          La rosa è anche un mi piace: finisci in prima fila tra i like di @{person.handle}, con la rosa in evidenza, e la tua
-          richiesta di messaggio va in cima. @{person.handle} decide comunque: se rifiuta non puoi riprovare e la rosa non
-          viene restituita. Se ti aveva già messo mi piace, è subito un match e non paghi nulla.
+          {person.mode === "like"
+            ? `La rosa è un mi piace con priorità: finisci in prima fila tra i like di @${person.handle}, con la rosa in evidenza. Dalla griglia non si scrive: per parlare serve un match. Se ti aveva già messo mi piace è subito un match e non paghi nulla. La rosa non viene restituita.`
+            : `La rosa è anche un mi piace: finisci in prima fila tra i like di @${person.handle} e la tua richiesta di messaggio va in cima. @${person.handle} decide comunque: se rifiuta non puoi riprovare e la rosa non viene restituita. Se ti aveva già messo mi piace, è subito un match e non paghi nulla.`}
         </p>
         <div className="mt-4 rounded-xl bg-neutral-50 border border-neutral-200 px-3.5 py-2.5 font-mono2 text-[12px] text-neutral-600 space-y-1">
           <div className="flex justify-between"><span>Costo</span><span>{ROSE_COST_LABEL}</span></div>
@@ -1843,7 +1879,8 @@ export default function App() {
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [dmRequests, setDmRequests] = useState({ incoming: [], outgoing: [] });
   const [gateOpen, setGateOpen] = useState(false);           // finestra "verifica la tua età"
-  const [roseTarget, setRoseTarget] = useState(null);        // persona a cui sto per mandare una rosa
+  const [roseTarget, setRoseTarget] = useState(null);        // persona a cui sto per mandare una rosa (con mode: "like" | "request")
+  const [profileMode, setProfileMode] = useState("full");    // "photos" = aperto dalla griglia (solo foto), "full" = profilo completo
   const isOnline = useCallback((id) => onlineIds.has(id), [onlineIds]);
   const [unread, setUnread] = useState(() => new Set()); // id delle DM con messaggi non letti
   /* ref: servono ai listener del socket, che vivono più a lungo di un singolo render */
@@ -1973,8 +2010,8 @@ export default function App() {
 
   /* aprendo "Persone" il feed si ricarica sempre: niente più pagina da aggiornare a mano */
   useEffect(() => {
-    if (tab === "people" && !isGuest) refreshPeople();
-  }, [tab, isGuest, refreshPeople]);
+    if (tab === "people" && !isGuest) { refreshPeople(); refreshLikesMe(); refreshMatches(); }
+  }, [tab, isGuest, refreshPeople, refreshLikesMe, refreshMatches]);
 
   /* se cambiano i miei amici/bloccati mentre un profilo è aperto, lo aggiorno
      (es. mi accettano l'amicizia → compaiono le foto "solo amici") */
@@ -2018,6 +2055,9 @@ export default function App() {
     });
     /* qualcuno mi ha messo like e ora è reciproco: lo sapevo già, lui no */
     s.on("match-changed", () => { refreshRef.current.likesMe?.(); refreshRef.current.matches?.(); setToast("Hai un nuovo match 🎉"); });
+    /* qualcuno mi ha messo like (anche semplice): la lista si aggiorna da sola; con una rosa, un avviso in più */
+    s.on("likes-changed", () => { refreshRef.current.likesMe?.(); });
+    s.on("rose-received", () => { refreshRef.current.likesMe?.(); setToast("Hai ricevuto una rosa 🌹"); });
     /* qualcuno chiede di scrivermi (o mi manda una rosa) */
     s.on("dm-request-received", () => { refreshRef.current.dmRequests?.(); refreshRef.current.likesMe?.(); setToast("Hai una nuova richiesta di messaggio."); });
     /* una richiesta è stata accettata (o rifiutata da me): si apre la conversazione, cambiano gli stati sulle tessere */
@@ -2053,11 +2093,11 @@ export default function App() {
     });
   }, []);
 
-  const openProfileById = async (userId) => {
+  const openProfileById = async (userId, mode = "full") => {
     if (isGuest) return requireAuth("Registrati per vedere i profili.");
     if (userId === me?.id) return setMyProfileOpen(true);
     if (String(userId).startsWith("guest-")) return; // i guest non hanno un profilo
-    try { setProfile(await api(`/api/people/${userId}`, { token })); }
+    try { const p = await api(`/api/people/${userId}`, { token }); setProfileMode(mode); setProfile(p); }
     catch (e) { handleApiError(e); }
   };
 
@@ -2130,25 +2170,49 @@ export default function App() {
     setProfile((cur) => (cur && cur.id === userId ? { ...cur, contact } : cur));
   };
 
-  /* mi piace sulla tessera (resta segnato; se è reciproco è un match) */
+  /* mi piace (tessera, profilo, lista dei like): resta segnato; se è reciproco è un match e la tessera esce dalla griglia */
   const onLike = useCallback(async (person) => {
     if (person.liked) return;
-    const setLiked = (liked, extra = {}) => setPeople((cur) => cur.map((p) => (p.id === person.id ? { ...p, liked, ...extra } : p)));
+    const setLiked = (liked) => setPeople((cur) => cur.map((p) => (p.id === person.id ? { ...p, liked } : p)));
     setLiked(true);
+    setLikesMe((cur) => cur.filter((u) => u.id !== person.id)); // se mi aveva messo like, ho risposto: esce dalla lista
     try {
       const r = await api(`/api/swipes/${person.id}`, { method: "POST", token, body: { action: "like" } });
-      if (r.match) { setLiked(true, { matched: true, contact: "open" }); setToast(`È un match con @${person.handle}! 🎉`); refreshMatches(); }
-    } catch (e) { setLiked(false); handleApiError(e); }
-  }, [token, refreshMatches, handleApiError]);
+      if (r.match) {
+        setPeople((cur) => cur.filter((p) => p.id !== person.id));
+        setToast(`È un match con @${person.handle}! 🎉`); refreshMatches();
+      }
+    } catch (e) { setLiked(false); refreshLikesMe(); handleApiError(e); }
+  }, [token, refreshMatches, refreshLikesMe, handleApiError]);
 
-  /* X: scarta la persona, la tessera sparisce subito (il server se lo ricorda) */
+  /* X: scarta la persona; la tessera sparisce subito e non torna (il server se lo ricorda) */
   const onPass = useCallback(async (person) => {
     if (person.liked) return;
     setPeople((cur) => cur.filter((p) => p.id !== person.id));
+    setLikesMe((cur) => cur.filter((u) => u.id !== person.id));
     try {
       await api(`/api/swipes/${person.id}`, { method: "POST", token, body: { action: "pass" } });
-    } catch (e) { refreshPeople(); handleApiError(e); }
-  }, [token, refreshPeople, handleApiError]);
+    } catch (e) { refreshPeople(); refreshLikesMe(); handleApiError(e); }
+  }, [token, refreshPeople, refreshLikesMe, handleApiError]);
+  const onPassLike = (userId) => onPass({ id: userId });
+
+  /* rosa dalla griglia: un mi piace con priorità (1,99). Non apre nessuna conversazione. */
+  const sendRoseLike = async (person) => {
+    try {
+      const r = await api(`/api/swipes/${person.id}`, { method: "POST", token, body: { action: "like", rose: true } });
+      if (typeof r.tokens === "number") setMe((m) => (m ? { ...m, tokens: r.tokens } : m));
+      setLikesMe((cur) => cur.filter((u) => u.id !== person.id));
+      if (r.match) {
+        setPeople((cur) => cur.filter((p) => p.id !== person.id));
+        setToast(`È un match con @${person.handle}! 🎉 Nessuna rosa addebitata.`); refreshMatches();
+      } else {
+        setPeople((cur) => cur.map((p) => (p.id === person.id ? { ...p, liked: true, rosed: true } : p)));
+        setToast(`Rosa inviata a @${person.handle} 🌹`);
+      }
+      setProfile(null);
+    } catch (e) { handleApiError(e); }
+    setRoseTarget(null);
+  };
 
   /* richiesta di messaggio, gratuita o con una rosa (priorità a pagamento) */
   const sendRequest = async (person, rose) => {
@@ -2179,7 +2243,7 @@ export default function App() {
     switch (person.contact) {
       case "open": return openDm(person, promptQ);
       case "request": return sendRequest(person, false);
-      case "rose": return setRoseTarget(person);
+      case "rose": return setRoseTarget({ ...person, mode: "request" });
       case "incoming": return acceptRequest(person);
       case "pending": return setToast("Hai già inviato una richiesta: aspetta la risposta.");
       case "closed": return setToast("Non è possibile scrivere a questa persona.");
@@ -2211,9 +2275,9 @@ export default function App() {
     setLikesMe((cur) => cur.filter((u) => u.id !== userId));
     try {
       const r = await api(`/api/swipes/${userId}`, { method: "POST", token, body: { action: "like" } });
-      if (r.match) setToast("È un match! 🎉");
+      if (r.match) { setToast("È un match! 🎉"); setPeople((cur) => cur.filter((p) => p.id !== userId)); }
+      else setPeople((cur) => cur.map((p) => (p.id === userId ? { ...p, liked: true } : p)));
       refreshMatches();
-      setPeople((cur) => cur.map((p) => (p.id === userId ? { ...p, liked: true, matched: !!r.match, contact: r.match ? "open" : p.contact } : p)));
     } catch (e) { refreshLikesMe(); handleApiError(e); }
   }, [token, refreshMatches, refreshLikesMe, handleApiError]);
 
@@ -2341,7 +2405,7 @@ export default function App() {
                 <aside className="hidden md:block w-72 shrink-0 overflow-y-auto no-scrollbar p-4" style={{ background: "#14121F" }}>
                   <LikesMatchesPanel likesMe={likesMe} matches={matches} isOnline={isOnline}
                     requests={dmRequests.incoming.filter((r) => !r.rose)} onAcceptRequest={acceptRequest} onDeclineRequest={declineRequest}
-                    onOpenProfile={openProfileById} onLikeBack={onLikeBack} onMessage={openDm} />
+                    onOpenProfile={openProfileById} onLikeBack={onLikeBack} onPassLike={onPassLike} onMessage={openDm} />
                 </aside>
                 {/* mobile: lo stesso hamburger in alto a sinistra lo apre come cassetto */}
                 {mobileRailOpen && (
@@ -2349,8 +2413,8 @@ export default function App() {
                     <div className="w-72 max-w-[80%] h-full overflow-y-auto no-scrollbar p-4 fade-up" style={{ background: "#14121F" }}>
                       <LikesMatchesPanel likesMe={likesMe} matches={matches} isOnline={isOnline}
                         requests={dmRequests.incoming.filter((r) => !r.rose)} onAcceptRequest={acceptRequest} onDeclineRequest={declineRequest}
-                        onOpenProfile={(id) => { setMobileRailOpen(false); openProfileById(id); }}
-                        onLikeBack={onLikeBack} onMessage={(u) => { setMobileRailOpen(false); openDm(u); }} />
+                        onOpenProfile={(id, mode) => { setMobileRailOpen(false); openProfileById(id, mode); }}
+                        onLikeBack={onLikeBack} onPassLike={onPassLike} onMessage={(u) => { setMobileRailOpen(false); openDm(u); }} />
                     </div>
                     <div className="flex-1 bg-black/50" onClick={() => setMobileRailOpen(false)} />
                   </div>
@@ -2386,16 +2450,22 @@ export default function App() {
                 </div>
               ) : (
                 <PeopleGrid people={people} hasMore={!!peopleNext} loading={peopleLoading} onLoadMore={loadMorePeople}
-                  onOpenProfile={(p) => openProfileById(p.id)} onLike={onLike} onPass={onPass}
-                  onContact={(p) => contactAction(p)} onRose={setRoseTarget} isOnline={isOnline} />
+                  onOpenProfile={(p) => openProfileById(p.id, "photos")} onLike={onLike} onPass={onPass}
+                  onRose={(p) => setRoseTarget({ ...p, mode: "like" })} isOnline={isOnline} />
               )}
             </main>
           </>
         )}
       </div>
 
-      <ProfileSheet user={profile} token={token} onClose={() => setProfile(null)} onMessage={contactAction} onRose={setRoseTarget}
-        relations={relations} actions={relActions} onOpenActions={setActionTarget} />
+      <ProfileSheet user={profile} token={token} onClose={() => setProfile(null)} onMessage={contactAction} onRose={(p) => setRoseTarget({ ...p, mode: "request" })}
+        relations={relations} actions={relActions} onOpenActions={setActionTarget}
+        photosOnly={profileMode === "photos"} tileState={people.find((p) => p.id === profile?.id)}
+        gridActions={{
+          onPass: (p) => { setProfile(null); onPass(p); },
+          onLike: (p) => { setProfile(null); onLike(p); },
+          onRose: (p) => setRoseTarget({ ...p, mode: "like" }),
+        }} />
       <MyProfileSheet open={myProfileOpen} me={me} token={token} onClose={() => setMyProfileOpen(false)}
         onUpdate={(fn) => setMe((m) => (m ? fn(m) : m))}
         relations={relations} isOnline={isOnline}
@@ -2403,7 +2473,7 @@ export default function App() {
       <UserActionSheet target={actionTarget} relations={relations} actions={relActions}
         onClose={() => setActionTarget(null)} hideViewProfile={!!profile && profile.id === actionTarget?.id} />
       <AuthModal open={auth.open} reason={auth.reason} onClose={() => setAuth({ open: false, reason: "" })} onAuthed={onAuthed} />
-      <RoseConfirm person={roseTarget} tokens={me?.tokens} onCancel={() => setRoseTarget(null)} onConfirm={(p) => sendRequest(p, true)} />
+      <RoseConfirm person={roseTarget} tokens={me?.tokens} onCancel={() => setRoseTarget(null)} onConfirm={(p) => (p.mode === "like" ? sendRoseLike(p) : sendRequest(p, true))} />
       <AgeGateModal open={gateOpen} onClose={() => setGateOpen(false)} onVerify={startAgeVerify} />
 
       {toast && (
